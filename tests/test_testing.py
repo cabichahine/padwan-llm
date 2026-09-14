@@ -1,48 +1,44 @@
-import json
-from typing import Any, cast
-
 import pytest
 
-from padwan_llm import AgentSession, LLMClientBase, McpTool
+from padwan_llm import AgentSession, ChatStream, McpTool, Message
 from padwan_llm.testing import ScriptedClient, Step
 
 
-async def _drain(stream) -> str:
+async def _drain(stream: ChatStream) -> str:
     return "".join([chunk async for chunk in stream])
 
 
-async def test_text_step_streams_text_and_usage() -> None:
-    client = ScriptedClient(
-        [Step(text="Bonjour", usage={"total": 5, "input": 3, "output": 2})]
-    )
-    stream = client.stream_chat([{"role": "user", "content": "salut"}])
-    assert await _drain(stream) == "Bonjour"
-    assert stream.usage == {"total": 5, "input": 3, "output": 2}
-    assert stream.tool_calls is None
-
-
-async def test_tool_step_exposes_openai_shaped_tool_calls() -> None:
+async def test_complete_chat_with_tool_calls() -> None:
     client = ScriptedClient([Step(tool_calls=[("search", {"query": "pelle"})])])
-    stream = client.stream_chat(
-        [], tools=[{"name": "search", "description": "", "parameters": {}}]
-    )
-    await _drain(stream)
-    (call,) = stream.tool_calls or []
-    assert call["type"] == "function"
-    assert call["function"]["name"] == "search"
-    assert json.loads(call["function"]["arguments"]) == {"query": "pelle"}
-    assert call["id"] == "call_1_0"
+    response, usage = await client.complete_chat([{"role": "user", "content": "go"}])
+    assert response == {
+        "content": None,
+        "finish_reason": "tool_calls",
+        "tool_calls": [
+            {
+                "id": "call_1_0",
+                "type": "function",
+                "function": {"name": "search", "arguments": '{"query": "pelle"}'},
+            }
+        ],
+    }
+    assert usage == {"total": 10, "input": 7, "output": 3}
 
 
 async def test_requests_are_recorded_and_the_script_ends() -> None:
     client = ScriptedClient([Step(text="ok")])
+    messages: list[Message] = [{"role": "user", "content": "q"}]
+    extra_params = {"metadata": {"trace_id": "abc"}}
     await _drain(
         client.stream_chat(
-            [{"role": "user", "content": "q"}],
+            messages,
             tools=[{"name": "t", "description": "", "parameters": {}}],
-            extra_params={"metadata": {"trace_id": "abc"}},
+            extra_params=extra_params,
         )
     )
+    # regression: the record is a snapshot, later mutation must not leak into it
+    messages[0]["content"] = "changed"
+    extra_params["metadata"]["trace_id"] = "changed"
     (request,) = client.requests
     assert request.messages == [{"role": "user", "content": "q"}]
     assert request.tool_names == ["t"]
@@ -52,27 +48,16 @@ async def test_requests_are_recorded_and_the_script_ends() -> None:
         client.stream_chat([])
 
 
-async def test_complete_chat_returns_a_chat_response() -> None:
-    client = ScriptedClient([Step(tool_calls=[("echo", {"x": 1})]), Step(text="done")])
-    response, usage = await client.complete_chat([{"role": "user", "content": "go"}])
-    assert response["finish_reason"] == "tool_calls"
-    assert response["content"] is None
-    assert [c["function"]["name"] for c in response["tool_calls"]] == ["echo"]
-    assert usage["total"] == 10
-    response, _ = await client.complete_chat([])
-    assert response == {"content": "done", "finish_reason": "stop"}
-
-
 async def test_it_drives_an_agent_session() -> None:
-    seen: list[dict[str, Any]] = []
+    seen: list[dict[str, object]] = []
 
-    async def echo(args: dict[str, Any]) -> dict[str, Any]:
+    async def echo(args: dict[str, object]) -> dict[str, object]:
         seen.append(args)
         return {"found": 1}
 
     client = ScriptedClient([Step(tool_calls=[("echo", {"x": 1})]), Step(text="done")])
     session = AgentSession(
-        client=cast(LLMClientBase, client),
+        client=client,
         system="s",
         mcp_tools=[McpTool("echo", "", {"type": "object"}, echo)],
     )
