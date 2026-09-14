@@ -64,6 +64,26 @@ async with AgentSession(
 
 On `__aenter__` the session enters every transport in order (via an `AsyncExitStack`), pings each one to prove the connection is live, and then fires the optional `on_mcp_connect` callback with the transport instance. All transports are torn down in LIFO order on exit — even if one of them fails to initialize or ping.
 
+## Typed answers
+
+An agent that must end on data, not prose, sets `output=` to the answer's class and calls `run()` instead of `send()`. The model sees one extra tool, `submit` (rename it with `output_tool=`), whose parameters are the answer's JSON Schema; the loop ends when a call to it validates, and `run()` returns the instance.
+
+```python
+from pydantic import BaseModel
+
+class Verdict(BaseModel):
+    decision: str            # "match" | "create" | "review"
+    article_id: int | None = None
+    reason: str
+
+async with AgentSession(client=client, mcp_tools=[search_tool], output=Verdict) as session:
+    verdict = await session.run("Excavator 21 t, tracked")   # a Verdict, validated
+```
+
+`output` is duck-typed: any class with `model_json_schema()` and `model_validate(obj)` works (`OutputModel` names the surface), so Pydantic is not a dependency of the loop.
+
+An invalid `submit` goes back to the model as the tool result, with the validation error, up to `max_repairs` times (1 by default); one more failure raises `OutputError`. A text answer without `submit`, or the round limit, raise `OutputError` too: a typed run never returns prose. `OutputError.attempts` and `.details` say what happened.
+
 ## Configuration
 
 ```python

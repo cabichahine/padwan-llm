@@ -15,6 +15,7 @@ from padwan_llm import (
     ConversationState,
     LLMClientBase,
     McpTool,
+    OutputError,
     ToolCall,
     ToolCallFunction,
     ToolDefinition,
@@ -953,3 +954,207 @@ async def test_on_mcp_connect_ping_failure_unwinds() -> None:
         ):
             pytest.fail("should have raised")
     assert fake.aexit_count == 1
+
+
+# Typed output
+
+
+class Verdict:
+    """Just enough of the Pydantic class surface for `output=`: no dependency in tests."""
+
+    def __init__(self, decision: str, article_id: int | None = None) -> None:
+        self.decision = decision
+        self.article_id = article_id
+
+    @classmethod
+    def model_json_schema(cls) -> dict[str, Any]:
+        return {
+            "title": "Verdict",
+            "type": "object",
+            "properties": {
+                "decision": {"type": "string"},
+                "article_id": {"type": ["integer", "null"]},
+            },
+            "required": ["decision"],
+        }
+
+    @classmethod
+    def model_validate(cls, obj: Any) -> "Verdict":
+        if not isinstance(obj, dict) or not isinstance(obj.get("decision"), str):
+            raise ValueError("decision: field required (string)")
+        return cls(obj["decision"], obj.get("article_id"))
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Verdict) and (self.decision, self.article_id) == (
+            other.decision,
+            other.article_id,
+        )
+
+
+async def _search(_args: dict[str, Any]) -> dict[str, Any]:
+    return {"refs": [{"id": 12, "name": "EXCAVATOR 20-22T"}]}
+
+
+SEARCH = McpTool(
+    name="search",
+    description="",
+    input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+    handler=_search,
+)
+
+
+def _submit(args: dict[str, Any], call_id: str = "call_s") -> ToolCall:
+    return make_tool_call("submit", args, call_id=call_id)
+
+
+async def test_run_ends_on_a_valid_submit() -> None:
+    session, client = make_session(
+        [
+            FakeChatStream(
+                chunks=[], tool_calls=[make_tool_call("search", {"q": "x"})]
+            ),
+            FakeChatStream(
+                chunks=[], tool_calls=[_submit({"decision": "match", "article_id": 12})]
+            ),
+        ],
+        mcp_tools=[SEARCH],
+        output=Verdict,
+    )
+    async with session:
+        verdict = await session.run("Excavator 21 t")
+    assert verdict == Verdict("match", 12)
+    assert len(client.calls) == 2  # no third round after submit
+    # the model sees submit from round one, with the answer's schema and no title
+    submit_def = next(t for t in client.calls[0][1] if t["name"] == "submit")
+    assert submit_def["parameters"]["required"] == ["decision"]
+    assert "title" not in submit_def["parameters"]
+    assert session.messages[-1]["role"] == "tool"
+
+
+async def test_an_invalid_submit_is_repaired_once() -> None:
+    session, client = make_session(
+        [
+            FakeChatStream(chunks=[], tool_calls=[_submit({"article_id": "nope"})]),
+            FakeChatStream(
+                chunks=[], tool_calls=[_submit({"decision": "review"}, "c2")]
+            ),
+        ],
+        output=Verdict,
+    )
+    async with session:
+        assert await session.run("go") == Verdict("review")
+    tool_msg = next(m for m in client.calls[1][0] if m.get("role") == "tool")
+    content = json.loads(cast(str, tool_msg["content"]))  # type: ignore[typeddict-item]
+    assert "call submit again" in content["error"]
+    assert "decision" in content["details"]
+
+
+@pytest.mark.parametrize(
+    "max_repairs, invalid_rounds",
+    [
+        pytest.param(1, 2, id="default_one_repair"),
+        pytest.param(0, 1, id="no_repair"),
+        pytest.param(2, 3, id="two_repairs"),
+    ],
+)
+async def test_too_many_invalid_submits_fail_the_run(
+    max_repairs: int, invalid_rounds: int
+) -> None:
+    responses = [
+        FakeChatStream(chunks=[], tool_calls=[_submit({}, f"c{i}")])
+        for i in range(invalid_rounds + 2)
+    ]
+    session, client = make_session(responses, output=Verdict, max_repairs=max_repairs)
+    async with session:
+        with pytest.raises(OutputError, match="invalid submit answer") as exc:
+            await session.run("go")
+    assert exc.value.attempts == invalid_rounds
+    assert len(client.calls) == invalid_rounds  # no round after the failure
+
+
+async def test_a_text_answer_without_submit_fails_the_run() -> None:
+    session, _ = make_session([FakeChatStream(chunks=["I think 12."])], output=Verdict)
+    async with session:
+        with pytest.raises(OutputError, match="without calling submit") as exc:
+            await session.run("go")
+    assert exc.value.details == "I think 12."
+
+
+async def test_the_round_limit_fails_the_run() -> None:
+    responses = [
+        FakeChatStream(chunks=[], tool_calls=[make_tool_call("search", {}, f"c{i}")])
+        for i in range(3)
+    ]
+    session, _ = make_session(
+        responses, mcp_tools=[SEARCH], output=Verdict, max_tool_rounds=2
+    )
+    async with session:
+        with pytest.raises(OutputError, match="within 2 round"):
+            await session.run("go")
+
+
+async def test_the_output_tool_can_be_renamed() -> None:
+    session, client = make_session(
+        [
+            FakeChatStream(
+                chunks=[], tool_calls=[make_tool_call("answer", {"decision": "create"})]
+            )
+        ],
+        output=Verdict,
+        output_tool="answer",
+    )
+    async with session:
+        assert await session.run("go") == Verdict("create")
+    assert [t["name"] for t in client.calls[0][1]] == ["answer"]
+
+
+async def test_a_second_run_starts_from_a_clean_slate() -> None:
+    session, client = make_session(
+        [
+            FakeChatStream(chunks=[], tool_calls=[_submit({"decision": "a"})]),
+            FakeChatStream(chunks=[], tool_calls=[_submit({"article_id": 1}, "c2")]),
+            FakeChatStream(chunks=[], tool_calls=[_submit({"decision": "b"}, "c3")]),
+        ],
+        output=Verdict,
+    )
+    async with session:
+        assert await session.run("first") == Verdict("a")
+        assert await session.run("second") == Verdict("b")  # one repair, counted afresh
+    assert len(client.calls) == 3
+
+
+def test_run_without_output_is_a_programming_error() -> None:
+    session, _ = make_session([])
+    with pytest.raises(ValueError, match="output"):
+        asyncio.run(session.run("go"))
+
+
+def test_a_user_tool_named_like_the_output_tool_is_refused() -> None:
+    clash = McpTool(name="submit", description="", input_schema={}, handler=_search)
+    session, _ = make_session(
+        [FakeChatStream(chunks=[], tool_calls=[_submit({"decision": "x"})])],
+        mcp_tools=[clash],
+        output=Verdict,
+    )
+    with pytest.raises(ValueError, match="Duplicate tool name 'submit'"):
+        asyncio.run(session.run("go"))
+
+
+def test_invalid_max_repairs_rejected() -> None:
+    with pytest.raises(ValueError, match="max_repairs"):
+        AgentSession(client=cast(LLMClientBase, FakeClient([])), max_repairs=-1)
+
+
+async def test_load_builds_a_typed_session() -> None:
+    client = FakeClient(
+        [FakeChatStream(chunks=[], tool_calls=[_submit({"decision": "match"})])]
+    )
+    session = AgentSession.load(
+        store=FakeStore(),
+        client=cast(LLMClientBase, client),
+        output=Verdict,
+        max_repairs=0,
+    )
+    async with session:
+        assert await session.run("go") == Verdict("match")
+    assert session.max_repairs == 0

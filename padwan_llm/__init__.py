@@ -24,7 +24,13 @@ from importlib.metadata import version as _pkg_version
 
 from ._base import ChatStream, LLMClientBase, OnThought, RealtimeClientBase
 from ._deprecation import ModelDeprecationWarning
-from .agent import AgentSession, ConversationStore, OnMcpConnect, ToolCallContext
+from .agent import (
+    AgentSession,
+    ConversationStore,
+    OnMcpConnect,
+    OutputModel,
+    ToolCallContext,
+)
 from .anthropic import (
     ANTHROPIC_MODELS,
     AnthropicClient,
@@ -53,7 +59,7 @@ from .conversation import (
     Message,
     ToolResultMessage,
 )
-from .errors import LLMError, Provider
+from .errors import LLMError, OutputError, Provider
 from .gemini import (
     GEMINI_MODELS,
     GeminiClient,
@@ -132,6 +138,8 @@ __all__ = (
     "OpenAIClient",
     "OpenAIModel",
     "OpenAIRealtimeClient",
+    "OutputError",
+    "OutputModel",
     "ProgressEvent",
     "Provider",
     "RealtimeClient",
