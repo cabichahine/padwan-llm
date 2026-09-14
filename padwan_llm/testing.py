@@ -1,0 +1,148 @@
+"""Scripted stand-ins for tests: drive an `AgentSession` or a chat loop without a provider.
+
+`ScriptedClient` answers each `stream_chat` / `complete_chat` call with the next `Step` of
+its script and records what the model would have seen, round by round, so a test can
+assert on the conversation as well as on the outcome. No socket is ever opened.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Self
+
+from ._base import ChatStream
+from .conversation import ChatMessage
+from .models import (
+    ChatResponse,
+    ToolCall,
+    ToolCallFunction,
+    ToolDefinition,
+    UsageToken,
+)
+
+__all__ = ("Request", "ScriptedClient", "Step")
+
+
+def _default_usage() -> UsageToken:
+    return {"total": 10, "input": 7, "output": 3}
+
+
+@dataclass
+class Step:
+    """One scripted LLM round: the text the model says and/or the tools it calls.
+
+    `tool_calls` is a list of ``(tool_name, arguments)`` pairs; the client turns them into
+    OpenAI-shaped `ToolCall`s with generated ids. `usage` defaults to a small fixed usage so
+    totals stay predictable across rounds.
+    """
+
+    text: str = ""
+    tool_calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    usage: UsageToken = field(default_factory=_default_usage)
+
+
+@dataclass
+class Request:
+    """What one round sent to the model."""
+
+    messages: list[ChatMessage]
+    tools: list[ToolDefinition]
+    extra_params: dict[str, Any] | None = None
+
+    @property
+    def tool_names(self) -> list[str]:
+        return [t["name"] for t in self.tools]
+
+
+class _ScriptedStream(ChatStream):
+    def __init__(self, step: Step, round_no: int) -> None:
+        self._step = step
+        self._round = round_no
+
+    async def __aiter__(self) -> AsyncIterator[str]:
+        if self._step.text:
+            yield self._step.text
+        self.usage = self._step.usage
+        self.tool_calls = _tool_calls(self._step, self._round)
+
+
+def _tool_calls(step: Step, round_no: int) -> list[ToolCall] | None:
+    calls = [
+        ToolCall(
+            id=f"call_{round_no}_{i}",
+            type="function",
+            function=ToolCallFunction(name=name, arguments=json.dumps(args)),
+        )
+        for i, (name, args) in enumerate(step.tool_calls)
+    ]
+    return calls or None
+
+
+class ScriptedClient:
+    """A client that replays a script instead of calling a provider.
+
+    Satisfies what `AgentSession` needs of a client — the async context manager,
+    `is_open`, and `stream_chat` — plus `complete_chat` for non-streaming callers.
+    Asking for more rounds than scripted raises `AssertionError`: a test that drifts
+    from its script fails loudly instead of hanging on an empty answer.
+    """
+
+    def __init__(self, steps: Sequence[Step]) -> None:
+        self._steps = list(steps)
+        self.requests: list[Request] = []
+        self._is_open = False
+
+    @property
+    def is_open(self) -> bool:
+        return self._is_open
+
+    @property
+    def remaining(self) -> int:
+        """Steps not consumed yet — assert it is 0 to prove the whole script ran."""
+        return len(self._steps)
+
+    async def __aenter__(self) -> Self:
+        self._is_open = True
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        self._is_open = False
+
+    def _next(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition] | None,
+        extra_params: dict[str, Any] | None,
+    ) -> tuple[Step, int]:
+        if not self._steps:
+            raise AssertionError(
+                f"ScriptedClient: script exhausted after {len(self.requests)} round(s)"
+            )
+        self.requests.append(Request(list(messages), list(tools or []), extra_params))
+        return self._steps.pop(0), len(self.requests)
+
+    def stream_chat(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition] | None = None,
+        extra_params: dict[str, Any] | None = None,
+    ) -> ChatStream:
+        step, round_no = self._next(messages, tools, extra_params)
+        return _ScriptedStream(step, round_no)
+
+    async def complete_chat(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition] | None = None,
+    ) -> tuple[ChatResponse, UsageToken]:
+        step, round_no = self._next(messages, tools, None)
+        calls = _tool_calls(step, round_no)
+        response: ChatResponse = {
+            "content": step.text or None,
+            "finish_reason": "tool_calls" if calls else "stop",
+        }
+        if calls:
+            response["tool_calls"] = calls
+        return response, step.usage

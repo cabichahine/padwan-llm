@@ -225,6 +225,29 @@ session.last_usage  # UsageToken from the most recent LLM call
 session.total_usage  # accumulated usage across all rounds in this session
 ```
 
+## Testing an agent
+
+`padwan_llm.testing.ScriptedClient` stands in for any client: it answers each round with the next `Step` of a script and records what the model would have seen, so a test asserts on the conversation as well as on the outcome — without a provider, a key or a socket.
+
+```python
+from typing import cast
+
+from padwan_llm import AgentSession, LLMClientBase, McpTool
+from padwan_llm.testing import ScriptedClient, Step
+
+client = ScriptedClient([
+    Step(tool_calls=[("get_weather", {"city": "Paris"})]),  # round 1: the model calls a tool
+    Step(text="Sunny in Paris."),                           # round 2: it answers
+])
+async with AgentSession(client=cast(LLMClientBase, client), mcp_tools=[weather_tool]) as session:
+    assert await session.send("Weather in Paris?") == "Sunny in Paris."
+
+assert client.requests[1].messages[-1]["role"] == "tool"  # the tool result went back to the model
+assert client.remaining == 0                              # the whole script ran
+```
+
+A script that runs out raises `AssertionError` on the next round: a test that drifts from its script fails loudly instead of hanging on an empty answer. `complete_chat` is scripted the same way for non-streaming callers.
+
 ## Limitations
 
 - **No mid-stream approval.** `ChatStream.tool_calls` is only populated after iteration completes, so `approve_tool` runs once all tool calls for a round are known. Streaming-with-interrupt is not yet supported.
