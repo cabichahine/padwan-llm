@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -223,6 +224,41 @@ async def test_tool_failure_modes(scenario: str) -> None:
         assert content == "custom error message"
         assert seen_errors == [("boom", seen_errors[0][1])]
         assert isinstance(seen_errors[0][1], RuntimeError)
+
+
+@pytest.mark.parametrize(
+    "level, traceback",
+    [
+        pytest.param(logging.INFO, False, id="one_line_by_default"),
+        pytest.param(logging.DEBUG, True, id="traceback_on_debug"),
+    ],
+)
+async def test_a_tool_failure_logs_its_traceback_only_on_debug(
+    caplog: pytest.LogCaptureFixture, level: int, traceback: bool
+) -> None:
+    async def boom(_args: dict[str, Any]) -> str:
+        raise RuntimeError("kaboom")
+
+    tool = McpTool(
+        name="boom",
+        description="",
+        input_schema={"type": "object", "properties": {}},
+        handler=boom,
+    )
+    session, _ = make_session(
+        [
+            FakeChatStream(chunks=[], tool_calls=[make_tool_call("boom", {})]),
+            FakeChatStream(chunks=["done"]),
+        ],
+        mcp_tools=[tool],
+    )
+    with caplog.at_level(level, logger="padwan_ai"):
+        await session.send("go")
+    [record] = [
+        r for r in caplog.records if r.getMessage() == "Tool 'boom' raised: kaboom"
+    ]
+    assert record.levelno == logging.WARNING
+    assert bool(record.exc_info) is traceback
 
 
 # Round limit
