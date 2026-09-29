@@ -120,7 +120,7 @@ billing = Langfuse(
 )
 ```
 
-`is_billing` stands for your own routing rule. The second client is yours to flush and shut down.
+`is_billing` stands for your own routing rule. The second client flushes at interpreter exit like any Langfuse client; call `billing.flush()` to send its spans earlier, since closing `telemetry` flushes only its own client.
 
 The integration exports traces only. Padwan metrics and exception log events still require separately configured OpenTelemetry meter and logger providers. Start the Langfuse integration before using Padwan; if `padwan_ai.otel.instrument()` is already active, the adapter raises instead of silently attaching to a different provider. See the [Langfuse OpenTelemetry integration](https://langfuse.com/integrations/native/opentelemetry) for backend configuration and troubleshooting.
 
