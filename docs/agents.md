@@ -24,7 +24,7 @@ Each iteration of the loop is called a **round**. Tool lists are re-read at the 
 
 With `output=` set (see [Typed answers](#typed-answers)), the round limit and a text answer without a tool call both raise `OutputError` instead of yielding a limit-reached message. `Dispatch` above runs each handler wrapped by the `on_tool` context manager, if set.
 
-A text run never raises on those: an empty answer yields `"(no response)"` and the round limit a limit-reached message, both as text. `session.stop_reason` tells them apart from a real answer once the run is over: `"answer"`, `"empty"` or `"round_limit"` (`None` before the first run and while one is in flight).
+A text run never raises on those: an empty answer yields `"(no response)"` and the round limit a limit-reached message, both as text. `session.stop_reason` tells them apart from a real answer once the run is over: `"answer"`, `"empty"` or `"round_limit"` (`None` before the first run, while one is in flight, and after a run that raised, such as a typed run's `OutputError`).
 
 ## Quick start
 

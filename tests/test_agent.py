@@ -1076,6 +1076,7 @@ async def test_too_many_invalid_submits_fail_the_run(
             await session.run("go")
     assert exc.value.reason == "invalid_answer"
     assert exc.value.attempts == invalid_rounds
+    assert session.stop_reason is None  # the failure is on the error
     assert len(client.calls) == invalid_rounds  # no round after the failure
 
 
@@ -1118,6 +1119,7 @@ async def test_a_run_without_submit_fails(
             await session.run("go")
     assert exc.value.reason == reason
     assert exc.value.details == details
+    assert session.stop_reason is None
 
 
 async def test_the_output_tool_can_be_renamed(verdict: type) -> None:

@@ -261,7 +261,7 @@ class AgentSession[T: Answer = Answer]:
     output: AgentOutput[T] | None = None
     """Typed final answer; enables `run()`."""
     stop_reason: StopReason | None = field(init=False, default=None)
-    """How the last run ended; None before the first one and while one is in flight.
+    """How the last run ended; None before the first one, while one is in flight, or if it raised.
     Tells an empty answer or the round limit apart from real text, since a
     text run yields a placeholder for both rather than raising."""
     _output: _OutputRun[T] | None = field(init=False, default=None, repr=False)
@@ -667,7 +667,7 @@ class AgentSession[T: Answer = Answer]:
 
             if not chat_stream.tool_calls:
                 text = "".join(chunks)
-                self.stop_reason = "answer" if text else "empty"
+                stop_reason: StopReason = "answer" if text else "empty"
                 if not text:
                     text = "(no response)"
                     yield text
@@ -680,6 +680,7 @@ class AgentSession[T: Answer = Answer]:
                         attempts=self._output.attempts,
                         details=text,
                     )
+                self.stop_reason = stop_reason
                 return
 
             self._state.messages.append(
@@ -701,13 +702,13 @@ class AgentSession[T: Answer = Answer]:
             "without a final answer)"
         )
         log.warning(msg)
-        self.stop_reason = "round_limit"
         if self._output is not None:
             raise OutputError(
                 f"no {self._output.spec.tool} call within {self.max_tool_rounds} round(s)",
                 reason="round_limit",
                 attempts=self._output.attempts,
             )
+        self.stop_reason = "round_limit"
         yield msg
 
     async def send(self, user_input: str | list[ContentPart]) -> str:
