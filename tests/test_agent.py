@@ -168,14 +168,21 @@ async def test_tool_call_round_trip() -> None:
 
 
 @pytest.mark.parametrize(
-    "scenario",
+    "scenario, level",
     [
-        pytest.param("unknown", id="unknown_tool"),
-        pytest.param("raise_default", id="handler_raises_default_error"),
-        pytest.param("raise_override", id="handler_raises_with_on_tool_error"),
+        pytest.param("unknown", logging.INFO, id="unknown_tool"),
+        pytest.param("raise_default", logging.INFO, id="handler_raises_default_error"),
+        pytest.param(
+            "raise_default", logging.DEBUG, id="handler_raises_traceback_on_debug"
+        ),
+        pytest.param(
+            "raise_override", logging.INFO, id="handler_raises_with_on_tool_error"
+        ),
     ],
 )
-async def test_tool_failure_modes(scenario: str) -> None:
+async def test_tool_failure_modes(
+    caplog: pytest.LogCaptureFixture, scenario: str, level: int
+) -> None:
     seen_errors: list[tuple[str, Exception]] = []
 
     async def boom(_args: dict[str, Any]) -> str:
@@ -209,8 +216,17 @@ async def test_tool_failure_modes(scenario: str) -> None:
         mcp_tools=tools,
         on_tool_error=on_tool_error,
     )
-    out = await session.send("go")
+    with caplog.at_level(level, logger="padwan_ai"):
+        out = await session.send("go")
     assert out == "done"
+    # one WARNING per raising tool; the traceback only on DEBUG
+    raised = [
+        r for r in caplog.records if r.getMessage() == "Tool 'boom' raised: kaboom"
+    ]
+    expected = (
+        [] if scenario == "unknown" else [(logging.WARNING, level == logging.DEBUG)]
+    )
+    assert [(r.levelno, bool(r.exc_info)) for r in raised] == expected
 
     second_messages = client.calls[1][0]
     tool_msg = next(m for m in second_messages if m.get("role") == "tool")
@@ -224,41 +240,6 @@ async def test_tool_failure_modes(scenario: str) -> None:
         assert content == "custom error message"
         assert seen_errors == [("boom", seen_errors[0][1])]
         assert isinstance(seen_errors[0][1], RuntimeError)
-
-
-@pytest.mark.parametrize(
-    "level, traceback",
-    [
-        pytest.param(logging.INFO, False, id="one_line_by_default"),
-        pytest.param(logging.DEBUG, True, id="traceback_on_debug"),
-    ],
-)
-async def test_a_tool_failure_logs_its_traceback_only_on_debug(
-    caplog: pytest.LogCaptureFixture, level: int, traceback: bool
-) -> None:
-    async def boom(_args: dict[str, Any]) -> str:
-        raise RuntimeError("kaboom")
-
-    tool = McpTool(
-        name="boom",
-        description="",
-        input_schema={"type": "object", "properties": {}},
-        handler=boom,
-    )
-    session, _ = make_session(
-        [
-            FakeChatStream(chunks=[], tool_calls=[make_tool_call("boom", {})]),
-            FakeChatStream(chunks=["done"]),
-        ],
-        mcp_tools=[tool],
-    )
-    with caplog.at_level(level, logger="padwan_ai"):
-        await session.send("go")
-    [record] = [
-        r for r in caplog.records if r.getMessage() == "Tool 'boom' raised: kaboom"
-    ]
-    assert record.levelno == logging.WARNING
-    assert bool(record.exc_info) is traceback
 
 
 # Round limit
