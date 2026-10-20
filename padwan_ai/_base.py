@@ -55,14 +55,18 @@ class ChatStream(abc.ABC):
 PADWAN_API_KEY_ENV = "PADWAN_API_KEY"
 
 
+DEFAULT_RETRY_DELAY = 60
+"""Seconds to wait after a 429 whose ``Retry-After`` is absent or unreadable."""
+
+
 def retry_after_delay(retry_after: str | None) -> int:
-    """Seconds to wait from a ``Retry-After`` header (seconds or HTTP date), at least 1; 60 if absent or unreadable."""
+    """Seconds to wait from a ``Retry-After`` header (seconds or HTTP date), at least 1."""
     if retry_after is None:
-        return 60
+        return DEFAULT_RETRY_DELAY
     try:
         return max(1, math.ceil(Retry().parse_retry_after(retry_after)))
     except (InvalidHeader, OverflowError, ValueError):
-        return 60
+        return DEFAULT_RETRY_DELAY
 
 
 def env_api_key(provider: Provider, var: str) -> str:
