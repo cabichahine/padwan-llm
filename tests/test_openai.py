@@ -1,10 +1,10 @@
 import json
-from contextlib import aclosing, nullcontext
+from contextlib import nullcontext
+from operator import attrgetter
 from types import MappingProxyType
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
-from niquests.exceptions import HTTPError
 
 from padwan_ai.errors import LLMError, QuotaExceededError, TooManyRequestsError
 from padwan_ai.openai.batch import BatchJob, BatchResult
@@ -396,7 +396,7 @@ async def test_complete_chat_reasoning_effort(
 
 
 class TestOpenAIStream:
-    """Tests for _OpenAIBase.stream() SSE parsing."""
+    """Tests for _OpenAIBase.stream() SSE parsing and stream_raw() relaying."""
 
     @pytest.fixture
     def client(self):
@@ -409,22 +409,29 @@ class TestOpenAIStream:
         c.session = AsyncMock()
         return c
 
-    @pytest.mark.asyncio
-    async def test_yields_parsed_chunks(self, client, make_sse_event, make_sse_resp):
+    @pytest.mark.parametrize(
+        "method, raw, reads",
+        [
+            pytest.param(OpenAIClient.stream, False, [], id="stream"),
+            # A positive chunk size buffers the whole reply before the first yield.
+            pytest.param(OpenAIClient.stream_raw, True, [call(-1)], id="stream_raw"),
+        ],
+    )
+    async def test_yields_chunks(
+        self, client, make_sse_event, make_sse_resp, method, raw, reads
+    ):
         chunk1 = {"choices": [{"delta": {"content": "Hello"}}]}
         chunk2 = {"choices": [{"delta": {"content": " world"}}]}
-        events = [
-            make_sse_event(json.dumps(chunk1)),
-            make_sse_event(json.dumps(chunk2)),
-        ]
-        client.session.post.return_value = make_sse_resp(events)
-        chunks = [
-            c
-            async for c in OpenAIClient.stream(
-                client, {"model": "gpt-4o", "messages": []}
-            )
-        ]
-        assert chunks == [chunk1, chunk2]
+        resp = make_sse_resp(
+            [make_sse_event(json.dumps(chunk1)), make_sse_event(json.dumps(chunk2))]
+        )
+        client.session.post.return_value = resp
+        chunks = [c async for c in method(client, {"model": "gpt-4o", "messages": []})]
+        expected = [chunk1, chunk2]
+        if raw:
+            expected = [f"data: {json.dumps(c)}\n\n".encode() for c in expected]
+        assert chunks == expected
+        assert resp.iter_content.await_args_list == reads
 
     @pytest.mark.asyncio
     async def test_done_sentinel_stops(self, client, make_sse_event, make_sse_resp):
@@ -446,33 +453,35 @@ class TestOpenAIStream:
         ]
         assert chunks == [chunk]
 
-    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "method, aborting, closed, count",
+        [
+            pytest.param(
+                OpenAIClient.stream,
+                lambda r: r.extension,
+                ("raw.close", "raw.release_conn"),
+                1,
+                id="stream",
+            ),
+            pytest.param(
+                OpenAIClient.stream_raw, lambda r: r, ("close",), 2, id="stream_raw"
+            ),
+        ],
+    )
     async def test_cleanup_failure_does_not_corrupt_stream(
-        self, client, make_sse_event, make_sse_resp
+        self, client, make_sse_event, make_sse_resp, method, aborting, closed, count
     ):
-        """Aborting an already-finished HTTP/2 stream raises KeyError inside
-        urllib3-future; the consumer must still get a clean stream end and the
-        connection must still be torn down and released."""
-        chunk = {"choices": [{"delta": {"content": "hi"}}]}
+        """Aborting a finished HTTP/2 stream raises KeyError in urllib3-future."""
         done_ev = MagicMock()
         done_ev.data = "[DONE]"
         done_ev.json = MagicMock(side_effect=ValueError)
-        resp = make_sse_resp([make_sse_event(json.dumps(chunk)), done_ev])
-
-        async def _h2_abort_quirk():
-            raise KeyError(1)
-
-        resp.extension.close = _h2_abort_quirk
+        resp = make_sse_resp([make_sse_event(json.dumps({"choices": []})), done_ev])
+        aborting(resp).close = AsyncMock(side_effect=KeyError(1))
         client.session.post.return_value = resp
-        chunks = [
-            c
-            async for c in OpenAIClient.stream(
-                client, {"model": "gpt-4o", "messages": []}
-            )
-        ]
-        assert chunks == [chunk]
-        resp.raw.close.assert_awaited_once()
-        resp.raw.release_conn.assert_called_once()
+        chunks = [c async for c in method(client, {"model": "gpt-4o", "messages": []})]
+        assert len(chunks) == count
+        for path in closed:
+            assert attrgetter(path)(resp).call_count == 1
 
     @pytest.mark.asyncio
     async def test_skips_keepalive_frames(self, client, make_sse_event, make_sse_resp):
@@ -491,20 +500,25 @@ class TestOpenAIStream:
         ]
         assert chunks == [chunk]
 
-    @pytest.mark.asyncio
-    async def test_no_extension_raises(self, client):
-        resp = AsyncMock()
-        resp.status_code = 200
-        resp.raise_for_status = MagicMock(return_value=resp)
+    @pytest.mark.parametrize(
+        "method, status, match",
+        [
+            pytest.param(OpenAIClient.stream, 200, "SSE extension", id="stream"),
+            pytest.param(OpenAIClient.stream_raw, 500, "boom", id="stream_raw"),
+        ],
+    )
+    async def test_raises_before_first_chunk(
+        self, client, make_sse_event, make_sse_resp, method, status, match
+    ):
+        resp = make_sse_resp([make_sse_event(json.dumps({"choices": []}))], status)
         resp.extension = None
+        resp.json.return_value = {"error": {"message": "boom"}}
         client.session.post.return_value = resp
-        with pytest.raises(LLMError, match="SSE extension"):
-            _ = [
-                c
-                async for c in OpenAIClient.stream(
-                    client, {"model": "gpt-4o", "messages": []}
-                )
-            ]
+        chunks = []
+        with pytest.raises(LLMError, match=match):
+            async for c in method(client, {"model": "gpt-4o", "messages": []}):
+                chunks.append(c)
+        assert chunks == []
 
     @pytest.mark.asyncio
     async def test_malformed_json_raises(self, client, make_sse_resp):
@@ -519,102 +533,6 @@ class TestOpenAIStream:
                     client, {"model": "gpt-4o", "messages": []}
                 )
             ]
-
-
-class TestOpenAIStreamRaw:
-    """Tests for _OpenAIBase.stream_raw(): the provider's SSE bytes, relayed unparsed."""
-
-    SSE = (
-        b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
-        b"data: [DONE]\n\n",
-    )
-
-    @pytest.fixture
-    def client(self):
-        c = MagicMock(spec=OpenAIClient)
-        c.provider = "openai"
-        c.session = AsyncMock()
-        return c
-
-    @staticmethod
-    def _resp(status: int = 200, chunks: tuple[bytes, ...] = (), body=None):
-        resp = AsyncMock()
-        resp.status_code = status
-        resp.headers = {}
-        if status >= 400:
-            resp.raise_for_status = MagicMock(side_effect=HTTPError(response=resp))
-        else:
-            resp.raise_for_status = MagicMock(return_value=resp)
-
-        async def _chunks():
-            for chunk in chunks:
-                yield chunk
-
-        resp.iter_content = AsyncMock(return_value=_chunks())
-        resp.json = AsyncMock(return_value=body)
-        return resp
-
-    @pytest.mark.asyncio
-    async def test_relays_bytes_unchanged_then_closes(self, client):
-        resp = self._resp(chunks=self.SSE)
-        client.session.post.return_value = resp
-        headers = {"x-litellm-end-user-id": "42"}
-        relayed = [
-            c
-            async for c in OpenAIClient.stream_raw(
-                client, {"model": "gpt-4o", "messages": []}, headers=headers
-            )
-        ]
-        assert relayed == list(self.SSE)
-        kwargs = client.session.post.call_args.kwargs
-        assert kwargs["json"] == {"model": "gpt-4o", "messages": [], "stream": True}
-        assert kwargs["headers"] == headers
-        assert kwargs["stream"] is True
-        # A positive chunk size buffers the whole reply before the first yield.
-        resp.iter_content.assert_awaited_once_with(-1)
-        resp.close.assert_awaited_once()
-
-    @pytest.mark.parametrize(
-        "close_error",
-        [
-            pytest.param(None, id="clean-close"),
-            pytest.param(KeyError(1), id="http2-abort-raises"),
-        ],
-    )
-    async def test_closes_when_the_caller_stops_reading(self, client, close_error):
-        resp = self._resp(chunks=self.SSE)
-        resp.close.side_effect = close_error
-        client.session.post.return_value = resp
-        async with aclosing(
-            OpenAIClient.stream_raw(client, {"model": "gpt-4o", "messages": []})
-        ) as stream:
-            async for _ in stream:
-                break
-        resp.close.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "status, body, error",
-        [
-            pytest.param(429, {"error": "slow down"}, TooManyRequestsError, id="429"),
-            pytest.param(402, {"error": "no credit"}, QuotaExceededError, id="402"),
-            pytest.param(500, {"error": {"message": "boom"}}, LLMError, id="500"),
-        ],
-    )
-    async def test_failure_raises_before_the_first_byte(
-        self, client, status, body, error
-    ):
-        resp = self._resp(status=status, chunks=self.SSE, body=body)
-        client.session.post.return_value = resp
-        relayed: list[bytes] = []
-        with pytest.raises(error):
-            async for chunk in OpenAIClient.stream_raw(
-                client, {"model": "gpt-4o", "messages": []}
-            ):
-                relayed.append(chunk)
-        assert relayed == []
-        resp.iter_content.assert_not_called()
-        resp.close.assert_awaited_once()
 
 
 _COMPLETION = {
@@ -649,6 +567,15 @@ async def _call_stream_chat(client: OpenAIClient, headers):
     ]
 
 
+async def _call_stream_raw(client: OpenAIClient, headers):
+    _ = [
+        c
+        async for c in client.stream_raw(
+            {"model": "gpt-4o", "messages": []}, headers=headers
+        )
+    ]
+
+
 @pytest.mark.parametrize(
     "call, streams",
     [
@@ -656,6 +583,7 @@ async def _call_stream_chat(client: OpenAIClient, headers):
         pytest.param(_call_complete_chat, False, id="complete_chat"),
         pytest.param(_call_stream, True, id="stream"),
         pytest.param(_call_stream_chat, True, id="stream_chat"),
+        pytest.param(_call_stream_raw, True, id="stream_raw"),
     ],
 )
 async def test_sends_per_call_headers(call, streams, make_resp, make_sse_resp):
