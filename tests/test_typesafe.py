@@ -121,6 +121,7 @@ def test_provider_errors(status, payload, message, make_resp):
             Retry().retry_after_max,
             id="http-date-capped",
         ),
+        pytest.param("Wed, 21 Oct 2015 07:28:00 GMT", 1, id="past-date-floor"),
         pytest.param("invalid", 60, id="malformed-fallback"),
         pytest.param(None, 60, id="missing-fallback"),
     ],

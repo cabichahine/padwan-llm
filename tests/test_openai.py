@@ -24,24 +24,19 @@ def test_openai_model_literal_includes_stable_drift_addition() -> None:
     assert "gpt-6.1-sol" in OPENAI_MODELS
 
 
-def _delay(seconds: int):
-    return pytest.raises(TooManyRequestsError, check=lambda e: e.retry_delay == seconds)
-
-
 _NOT_JSON = ValueError("not json")
-_PAST = "Wed, 21 Oct 2015 07:28:00 GMT"
 
 
 @pytest.mark.parametrize(
     "status, json_data, headers, ctx",
     [
         pytest.param(200, {"ok": True}, None, nullcontext(), id="success"),
-        pytest.param(429, {}, {"retry-after": "30"}, _delay(30), id="429-seconds"),
-        pytest.param(429, {}, None, _delay(60), id="429-default-60"),
-        pytest.param(429, {}, {"retry-after": _PAST}, _delay(1), id="429-past-date"),
-        pytest.param(429, {}, {"retry-after": "soon"}, _delay(60), id="429-unreadable"),
         pytest.param(
-            429, _NOT_JSON, {"retry-after": "30"}, _delay(30), id="429-non-json"
+            429,
+            _NOT_JSON,
+            {"retry-after": "30"},
+            pytest.raises(TooManyRequestsError, check=lambda e: e.retry_delay == 30),
+            id="429-non-json",
         ),
         pytest.param(502, _NOT_JSON, None, pytest.raises(HTTPError), id="502-non-json"),
         pytest.param(
