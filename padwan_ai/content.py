@@ -2,7 +2,7 @@ import asyncio
 import base64
 import mimetypes
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Literal, NamedTuple, TypedDict
 
 __all__ = (
     "AudioFormat",
@@ -120,17 +120,29 @@ def audio_part(path: str | Path, *, fmt: AudioFormat | None = None) -> ContentAu
     return {"type": "input_audio", "input_audio": {"data": data, "format": fmt}}
 
 
-async def _read_audio(file: str | Path | bytes) -> tuple[str, bytes, str]:
-    """Load an upload source as `(filename, data, mime)` off the event loop; raw bytes get generic values."""
+class _AudioUpload(NamedTuple):
+    """An audio upload, shaped as niquests' ``(filename, data, content_type)`` file tuple."""
+
+    filename: str
+    data: bytes
+    mime: str
+
+
+async def _read_audio(
+    file: str | Path | bytes,
+    *,
+    filename: str | None = None,
+    content_type: str | None = None,
+) -> _AudioUpload:
+    """Load an upload source off the event loop; ``filename`` and ``content_type`` override its own."""
     if isinstance(file, bytes):
-        return "audio", file, "application/octet-stream"
-    path = Path(file)
-    data = await asyncio.to_thread(path.read_bytes)
-    return (
-        path.name,
-        data,
-        mimetypes.guess_type(path.name)[0] or "application/octet-stream",
-    )
+        data, name = file, "audio"
+    else:
+        path = Path(file)
+        data, name = await asyncio.to_thread(path.read_bytes), path.name
+    name = filename or name
+    mime = content_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
+    return _AudioUpload(name, data, mime)
 
 
 def text_file_part(path: str | Path, *, encoding: str = "utf-8") -> ContentTextPart:

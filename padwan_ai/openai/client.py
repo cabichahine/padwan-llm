@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import dataclasses
-import mimetypes
 import os
 import typing
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
@@ -606,9 +605,7 @@ class OpenAIClient(_OpenAIBase):
         """
         if isinstance(file, bytes) and not filename:
             raise ValueError("filename is required with raw bytes")
-        name, content, mime = await _read_audio(file)
-        filename = filename or name
-        mime = content_type or mimetypes.guess_type(filename)[0] or mime
+        audio = await _read_audio(file, filename=filename, content_type=content_type)
         data: list[tuple[str, str]] = [("model", model)]
         if language is not None:
             data.append(("language", language))
@@ -618,7 +615,7 @@ class OpenAIClient(_OpenAIBase):
             data.append(("temperature", str(temperature)))
         resp = await self.session.post(
             "/audio/transcriptions",
-            files=[("file", (filename, content, mime))],
+            files=[("file", audio)],
             data=data,
             headers=dict(headers) if headers else None,
         )
