@@ -182,8 +182,7 @@ async def _check_stream_status(resp: niquests.AsyncResponse) -> None:
 def _raise_http_error(
     resp: niquests.Response, data: typing.Any, cause: niquests.exceptions.HTTPError
 ) -> typing.NoReturn:
-    """Raise the padwan error for a failed response whose JSON body is `data` (None
-    when the body is not JSON: a 429 still maps, any other status re-raises `cause`)."""
+    """Raise the padwan error for a failed response; `data` is its JSON body, or None if not JSON."""
     if resp.status_code == HTTPStatus.TOO_MANY_REQUESTS:
         raise TooManyRequestsError(
             retry_delay=retry_after_delay(resp.headers.get("retry-after")),
