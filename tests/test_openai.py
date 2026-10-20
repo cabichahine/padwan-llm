@@ -505,6 +505,24 @@ class TestOpenAIStream:
             ]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "headers",
+        [
+            pytest.param({"x-litellm-end-user-id": "42"}, id="per-call"),
+            pytest.param(None, id="none"),
+        ],
+    )
+    async def test_sends_per_call_headers(self, client, make_sse_resp, headers):
+        client.session.post.return_value = make_sse_resp([])
+        _ = [
+            c
+            async for c in OpenAIClient.stream(
+                client, {"model": "gpt-4o", "messages": []}, headers=headers
+            )
+        ]
+        assert client.session.post.call_args.kwargs["headers"] == headers
+
+    @pytest.mark.asyncio
     async def test_malformed_json_raises(self, client, make_sse_resp):
         ev = MagicMock()
         ev.data = "{bad json"
@@ -517,6 +535,32 @@ class TestOpenAIStream:
                     client, {"model": "gpt-4o", "messages": []}
                 )
             ]
+
+
+class TestOpenAIComplete:
+    """Tests for _OpenAIBase.complete()."""
+
+    @pytest.mark.asyncio
+    async def test_sends_per_call_headers(self, make_resp):
+        client = MagicMock(spec=OpenAIClient)
+        client.provider = "openai"
+        client.session = AsyncMock()
+        client.session.post.return_value = make_resp(
+            200,
+            {
+                "choices": [],
+                "usage": {
+                    "total_tokens": 3,
+                    "prompt_tokens": 2,
+                    "completion_tokens": 1,
+                },
+            },
+        )
+        headers = {"x-litellm-tags": "tenant:7"}
+        await OpenAIClient.complete(
+            client, {"model": "gpt-4o", "messages": []}, headers=headers
+        )
+        assert client.session.post.call_args.kwargs["headers"] == headers
 
 
 class TestBatchResultFromLine:

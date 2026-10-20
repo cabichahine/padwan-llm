@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal, cast, get_args
 from urllib.parse import urlparse
 
 import niquests
+from niquests.typing import HeadersType
 from urllib3.util.retry import Retry
 
 from .._base import (
@@ -276,11 +277,18 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
     async def complete(
         self,
         body: CreateChatCompletionRequest,
+        *,
+        headers: HeadersType | None = None,
     ) -> tuple[CreateChatCompletionResponse, UsageToken]:
-        """Fetch structured completion from an OpenAI-compatible endpoint."""
+        """Fetch structured completion from an OpenAI-compatible endpoint.
+
+        ``headers`` are sent with this request only, on top of the session's (e.g. a
+        gateway's per-user attribution headers on a client shared by every user).
+        """
         resp = await self.session.post(
             "/chat/completions",
             json=body,
+            headers=headers,
         )
         data: CreateChatCompletionResponse = _check_resp(resp)
 
@@ -304,11 +312,17 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
     async def stream(
         self,
         body: CreateChatCompletionRequest,
+        *,
+        headers: HeadersType | None = None,
     ) -> AsyncIterator[CreateChatCompletionStreamResponse]:
-        """Stream chat completions, yielding response chunks as they arrive via SSE."""
+        """Stream chat completions, yielding response chunks as they arrive via SSE.
+
+        ``headers`` are sent with this request only, as in `complete`.
+        """
         resp = await self.session.post(
             self._sse_url("/chat/completions"),
             json={**body, "stream": True},
+            headers=headers,
         )
         _check_resp_status(resp)
         async with aclosing(self._iter_sse(resp, done_sentinel="[DONE]")) as events:
