@@ -541,49 +541,25 @@ _COMPLETION = {
 }
 
 
-async def _call_complete(client: OpenAIClient, headers):
-    await client.complete({"model": "gpt-4o", "messages": []}, headers=headers)
+_BODY = {"model": "gpt-4o", "messages": []}
+_MESSAGES = [{"role": "user", "content": "hi"}]
 
 
-async def _call_complete_chat(client: OpenAIClient, headers):
-    await client.complete_chat([{"role": "user", "content": "hi"}], headers=headers)
-
-
-async def _call_stream(client: OpenAIClient, headers):
-    _ = [
-        c
-        async for c in client.stream(
-            {"model": "gpt-4o", "messages": []}, headers=headers
-        )
-    ]
-
-
-async def _call_stream_chat(client: OpenAIClient, headers):
-    _ = [
-        c
-        async for c in client.stream_chat(
-            [{"role": "user", "content": "hi"}], headers=headers
-        )
-    ]
-
-
-async def _call_stream_raw(client: OpenAIClient, headers):
-    _ = [
-        c
-        async for c in client.stream_raw(
-            {"model": "gpt-4o", "messages": []}, headers=headers
-        )
-    ]
-
-
+# complete_chat and stream_chat wrap complete and stream, so they cover them too
 @pytest.mark.parametrize(
     "call, streams",
     [
-        pytest.param(_call_complete, False, id="complete"),
-        pytest.param(_call_complete_chat, False, id="complete_chat"),
-        pytest.param(_call_stream, True, id="stream"),
-        pytest.param(_call_stream_chat, True, id="stream_chat"),
-        pytest.param(_call_stream_raw, True, id="stream_raw"),
+        pytest.param(
+            lambda c, h: c.complete_chat(_MESSAGES, headers=h),
+            False,
+            id="complete_chat",
+        ),
+        pytest.param(
+            lambda c, h: c.stream_chat(_MESSAGES, headers=h), True, id="stream_chat"
+        ),
+        pytest.param(
+            lambda c, h: c.stream_raw(_BODY, headers=h), True, id="stream_raw"
+        ),
     ],
 )
 async def test_sends_per_call_headers(call, streams, make_resp, make_sse_resp):
@@ -592,7 +568,11 @@ async def test_sends_per_call_headers(call, streams, make_resp, make_sse_resp):
     client._session.post.return_value = (
         make_sse_resp([]) if streams else make_resp(200, _COMPLETION)
     )
-    await call(client, MappingProxyType({"x-litellm-end-user-id": "42"}))
+    result = call(client, MappingProxyType({"x-litellm-end-user-id": "42"}))
+    if streams:
+        _ = [c async for c in result]
+    else:
+        await result
     assert client._session.post.call_args.kwargs["headers"] == {
         "x-litellm-end-user-id": "42"
     }
