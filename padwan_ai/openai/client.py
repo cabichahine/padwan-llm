@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 import os
 import typing
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal, cast, get_args
 from urllib.parse import urlparse
 
 import niquests
+from urllib3.exceptions import InvalidHeader
 from urllib3.util.retry import Retry
 
 from .._base import (
@@ -161,7 +163,7 @@ def _check_resp_status(resp: niquests.Response) -> niquests.Response:
         try:
             data = resp.json()
         except Exception:
-            raise e
+            data = None
         _raise_http_error(resp, data, e)
 
 
@@ -174,18 +176,21 @@ async def _check_stream_status(resp: niquests.AsyncResponse) -> None:
         try:
             data = await resp.json()
         except Exception:
-            raise e
+            data = None
         _raise_http_error(resp, data, e)
 
 
 def _raise_http_error(
     resp: niquests.Response, data: typing.Any, cause: niquests.exceptions.HTTPError
 ) -> typing.NoReturn:
-    """Raise the padwan error for a failed response whose JSON body is `data`."""
+    """Raise the padwan error for a failed response whose JSON body is `data` (None
+    when the body is not JSON: a 429 still maps, any other status re-raises `cause`)."""
     if resp.status_code == HTTPStatus.TOO_MANY_REQUESTS:
-        retry_after = resp.headers.get("retry-after")
-        retry_delay = int(retry_after) if retry_after else 60
-        raise TooManyRequestsError(retry_delay=retry_delay, response=resp)
+        raise TooManyRequestsError(
+            retry_delay=_retry_delay(resp.headers.get("retry-after")), response=resp
+        ) from cause
+    if data is None:
+        raise cause
     if resp.status_code == HTTPStatus.PAYMENT_REQUIRED:
         raise QuotaExceededError(body=data)
     error = data.get("error", "") if isinstance(data, dict) else data
@@ -197,6 +202,17 @@ def _raise_http_error(
     else:
         msg = str(error)
     raise LLMError("openai", f"{resp.status_code} {msg}", body=data) from cause
+
+
+def _retry_delay(retry_after: str | None) -> int:
+    """Seconds to wait from a ``Retry-After`` header (seconds or an HTTP date); 60
+    when it is absent or unreadable."""
+    if retry_after is None:
+        return 60
+    try:
+        return math.ceil(Retry().parse_retry_after(retry_after))
+    except (InvalidHeader, OverflowError, ValueError):
+        return 60
 
 
 def _check_resp[T](

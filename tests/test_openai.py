@@ -5,6 +5,7 @@ from types import MappingProxyType
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
+from niquests.exceptions import HTTPError
 
 from padwan_ai.errors import LLMError, QuotaExceededError, TooManyRequestsError
 from padwan_ai.openai.batch import BatchJob, BatchResult
@@ -52,6 +53,33 @@ def test_check_resp(status, json_data, headers, ctx, make_resp):
     with ctx:
         result = _check_resp(resp)
         assert result == json_data
+
+
+@pytest.mark.parametrize(
+    "headers, json_body, expected_delay",
+    [
+        pytest.param({"retry-after": "30"}, True, 30, id="seconds"),
+        pytest.param(
+            {"retry-after": "Wed, 21 Oct 2015 07:28:00 GMT"}, True, 0, id="past-date"
+        ),
+        pytest.param({"retry-after": "soon"}, True, 60, id="unreadable"),
+        pytest.param(None, False, 60, id="non-json-body"),
+    ],
+)
+def test_check_resp_429_retry_delay(headers, json_body, expected_delay, make_resp):
+    resp = make_resp(429, {}, headers)
+    if not json_body:
+        resp.json.side_effect = ValueError("not json")
+    with pytest.raises(TooManyRequestsError) as exc:
+        _check_resp(resp)
+    assert exc.value.retry_delay == expected_delay
+
+
+def test_check_resp_non_json_error_keeps_the_http_error(make_resp):
+    resp = make_resp(502, {})
+    resp.json.side_effect = ValueError("not json")
+    with pytest.raises(HTTPError):
+        _check_resp(resp)
 
 
 class TestOpenAIChatStreamExtraction:
