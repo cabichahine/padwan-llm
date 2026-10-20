@@ -1,9 +1,11 @@
+from contextlib import nullcontext
+
 import pytest
 
 from padwan_ai import OpenAIClient
 from padwan_ai.openai import BatchRequest
 
-from .conftest import skip_no_openai
+from .conftest import AUDIO_FIXTURE, skip_no_openai
 
 pytestmark = [pytest.mark.e2e, skip_no_openai]
 
@@ -37,3 +39,25 @@ async def test_embeddings() -> None:
         assert len(resp["data"]) == 2
         assert len(resp["data"][0]["embedding"]) == 256
         assert resp["usage"]["total_tokens"] > 0
+
+
+@pytest.mark.skipif(not AUDIO_FIXTURE.exists(), reason="audio fixture not found")
+@pytest.mark.parametrize(
+    "as_bytes, filename, ctx",
+    [
+        pytest.param(False, None, nullcontext(), id="path"),
+        pytest.param(True, "clip.wav", nullcontext(), id="bytes"),
+        pytest.param(
+            True,
+            None,
+            pytest.raises(ValueError, match="filename"),
+            id="bytes-without-filename",
+        ),
+    ],
+)
+async def test_transcribe(as_bytes, filename, ctx) -> None:
+    file = AUDIO_FIXTURE.read_bytes() if as_bytes else AUDIO_FIXTURE
+    async with OpenAIClient() as client:
+        with ctx:
+            resp = await client.transcribe(file=file, filename=filename)
+            assert "pallet" in resp["text"].lower()

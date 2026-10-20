@@ -9,7 +9,7 @@ __lazy_modules__ = frozenset(
     }
 )
 
-from .audio import AUDIO_FORMATS, supports_audio
+from .audio import AUDIO_FORMATS, Transcription, supports_audio
 from .batch import BatchJob, BatchRequest, BatchResult
 from .client import (
     OPENAI_CHAT_MODELS,
@@ -51,6 +51,7 @@ __all__ = (
     "RealtimeConnection",
     "RealtimeServerEvent",
     "RealtimeVoice",
+    "Transcription",
     "is_openai_model",
     "supports_audio",
     "supports_vision",

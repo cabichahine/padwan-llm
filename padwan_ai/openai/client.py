@@ -3,11 +3,12 @@ from __future__ import annotations
 import dataclasses
 import os
 import typing
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from contextlib import aclosing
 from dataclasses import field
 from functools import partial
 from http import HTTPStatus
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal, cast, get_args
 from urllib.parse import urlparse
 
@@ -22,17 +23,20 @@ from .._base import (
     env_api_key,
 )
 from .._json import dumps as _json_dumps, loads as _json_loads
+from ..content import _read_audio
 from ..conversation import ChatMessage
 from ..errors import LLMError, QuotaExceededError, TooManyRequestsError
 from ..logs import log
 from ..models import (
     ChatResponse,
     FinishReason,
+    RequestHeaders,
     ToolCall,
     ToolCallFunction,
     ToolDefinition,
     UsageToken,
 )
+from .audio import Transcription
 from .batch import BatchJob, BatchRequest, BatchResult
 from .tools import OpenAIToolMixin
 from .types import Batch, ListBatchesResponse, OpenAIFile
@@ -298,7 +302,7 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
         self,
         body: CreateChatCompletionRequest,
         *,
-        headers: Mapping[str, str] | None = None,
+        headers: RequestHeaders | None = None,
     ) -> tuple[CreateChatCompletionResponse, UsageToken]:
         """Fetch structured completion from an OpenAI-compatible endpoint.
 
@@ -333,7 +337,7 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
         self,
         body: CreateChatCompletionRequest,
         *,
-        headers: Mapping[str, str] | None = None,
+        headers: RequestHeaders | None = None,
     ) -> AsyncIterator[CreateChatCompletionStreamResponse]:
         """Stream chat completions, yielding response chunks as they arrive via SSE.
 
@@ -353,18 +357,12 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
         self,
         body: CreateChatCompletionRequest,
         *,
-        headers: Mapping[str, str] | None = None,
+        headers: RequestHeaders | None = None,
         chunk_size: int = -1,
     ) -> AsyncGenerator[bytes]:
-        """Stream a chat completion as the provider's SSE bytes, unparsed: ``data:``
-        lines and the ``[DONE]`` terminator included, for a caller that relays them as
-        they are (a backend in front of a browser that reads the OpenAI wire format).
+        """Stream a chat completion as the provider's raw SSE bytes, for relaying unchanged.
 
-        The status is checked before the first byte, and a failure raises as in
-        `stream`. The connection is closed when the stream ends or the generator is
-        closed (wrap it in `aclosing` to close it on an early ``break``). ``headers`` are
-        sent with this request only, as in `complete`; the default ``chunk_size=-1``
-        yields bytes as they arrive (a positive size buffers up to it).
+        Errors raise before the first byte; ``chunk_size=-1`` yields bytes as they arrive.
         """
         resp = await self.session.post(
             "/chat/completions",
@@ -422,7 +420,7 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
         tools: Sequence[ToolDefinition] | None = None,
         extra_params: dict[str, typing.Any] | None = None,
         *,
-        headers: Mapping[str, str] | None = None,
+        headers: RequestHeaders | None = None,
     ) -> tuple[ChatResponse, UsageToken]:
         """Send a chat conversation and return the structured response; ``headers`` as in `complete`."""
         if not self.model:
@@ -466,7 +464,7 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
         tools: Sequence[ToolDefinition] | None = None,
         extra_params: dict[str, typing.Any] | None = None,
         *,
-        headers: Mapping[str, str] | None = None,
+        headers: RequestHeaders | None = None,
     ) -> OpenAIChatStream:
         """Stream a chat conversation, yielding text chunks.
 
@@ -488,7 +486,7 @@ class OpenAIChatStream(ChatStream, OpenAIToolMixin):
     messages: Sequence[ChatMessage]
     tools: Sequence[ToolDefinition] | None = None
     extra_params: dict[str, typing.Any] | None = None
-    headers: Mapping[str, str] | None = None
+    headers: RequestHeaders | None = None
     usage: UsageToken | None = None
     tool_calls: list[ToolCall] | None = None
     finish_reason: str | None = None
@@ -585,6 +583,44 @@ class OpenAIChatStream(ChatStream, OpenAIToolMixin):
 @dataclasses.dataclass
 class OpenAIClient(_OpenAIBase):
     """OpenAI API client with chat and batch support."""
+
+    async def transcribe(
+        self,
+        *,
+        file: str | Path | bytes,
+        filename: str | None = None,
+        content_type: str | None = None,
+        model: str = "whisper-1",
+        language: str | None = None,
+        prompt: str | None = None,
+        temperature: float | None = None,
+        headers: RequestHeaders | None = None,
+    ) -> Transcription:
+        """Transcribe audio with ``POST /audio/transcriptions`` (multipart).
+
+        ``file`` is a path or raw bytes. The provider reads the audio format from the
+        file name's extension, so raw bytes need ``filename`` (e.g. ``"note.webm"``).
+        ``prompt`` steers spelling and vocabulary; ``headers`` are sent with this
+        request only, as in `complete`.
+        """
+        if isinstance(file, bytes) and not filename:
+            raise ValueError("filename is required with raw bytes")
+        audio = await _read_audio(file, filename=filename, content_type=content_type)
+        data: list[tuple[str, str]] = [("model", model)]
+        if language is not None:
+            data.append(("language", language))
+        if prompt is not None:
+            data.append(("prompt", prompt))
+        if temperature is not None:
+            data.append(("temperature", str(temperature)))
+        resp = await self.session.post(
+            "/audio/transcriptions",
+            files=[("file", audio)],
+            data=data,
+            headers=dict(headers) if headers else None,
+        )
+        result: Transcription = _check_resp(resp)
+        return result
 
     async def upload_batch_file(
         self,

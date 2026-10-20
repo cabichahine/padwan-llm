@@ -90,7 +90,9 @@ def make_sse_resp():
         resp = AsyncMock()
         resp.status_code = status
         resp.headers = {"content-type": "text/event-stream"}
-        resp.raise_for_status = MagicMock(return_value=resp)
+        resp.raise_for_status = MagicMock(
+            side_effect=HTTPError(response=resp) if status >= 400 else None
+        )
         ext = MagicMock()
         ext.closed = False
         payloads = list(events) + [None]
@@ -117,6 +119,12 @@ def make_sse_resp():
         raw.close = AsyncMock()
         raw.release_conn = MagicMock()
         resp.raw = raw
+
+        async def _iter_content(_chunk_size):
+            for ev in events:
+                yield f"data: {ev.data}\n\n".encode()
+
+        resp.iter_content = AsyncMock(side_effect=_iter_content)
         return resp
 
     return _make

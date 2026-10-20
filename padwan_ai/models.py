@@ -1,13 +1,19 @@
+from collections.abc import Mapping
 from typing import Any, Literal, NotRequired, TypedDict
 
 __all__ = (
     "ChatResponse",
     "FinishReason",
+    "RequestHeaders",
     "ToolCall",
     "ToolCallFunction",
     "ToolDefinition",
     "UsageToken",
 )
+
+
+type RequestHeaders = Mapping[str, str]
+"""Headers sent with one request only, merged over the session's."""
 
 
 class UsageToken(TypedDict):

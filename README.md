@@ -98,7 +98,7 @@ For an interactive chat TUI use [`padwan-cli`](https://github.com/polarsen-io/pa
 
 | Provider | Chat + streaming | Batch | Realtime voice | Transcription | TTS | Embeddings |
 |----------|:-:|:-:|:-:|:-:|:-:|:-:|
-| OpenAI | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
+| OpenAI | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Gemini | ✅ | ✅ | ✅ | ➖ | ✅ | ✅ |
 | Anthropic | ✅ | ❌ | ➖ | ➖ | ➖ | ➖ |
 | Mistral | ✅ | ❌ | ❌ | ✅ | ❌ | ✅ |
