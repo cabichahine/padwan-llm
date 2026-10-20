@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import mimetypes
 import os
 import typing
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
@@ -8,6 +9,7 @@ from contextlib import aclosing
 from dataclasses import field
 from functools import partial
 from http import HTTPStatus
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal, cast, get_args
 from urllib.parse import urlparse
 
@@ -33,6 +35,7 @@ from ..models import (
     ToolDefinition,
     UsageToken,
 )
+from .audio import Transcription
 from .batch import BatchJob, BatchRequest, BatchResult
 from .tools import OpenAIToolMixin
 from .types import Batch, ListBatchesResponse, OpenAIFile
@@ -585,6 +588,53 @@ class OpenAIChatStream(ChatStream, OpenAIToolMixin):
 @dataclasses.dataclass
 class OpenAIClient(_OpenAIBase):
     """OpenAI API client with chat and batch support."""
+
+    async def transcribe(
+        self,
+        file: str | Path | bytes,
+        *,
+        filename: str | None = None,
+        content_type: str | None = None,
+        model: str = "whisper-1",
+        language: str | None = None,
+        prompt: str | None = None,
+        temperature: float | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> Transcription:
+        """Transcribe audio with ``POST /audio/transcriptions`` (multipart).
+
+        ``file`` is a path or raw bytes. The provider reads the audio format from the
+        file name's extension, so raw bytes need ``filename`` (e.g. ``"note.webm"``).
+        ``prompt`` steers spelling and vocabulary; ``headers`` are sent with this
+        request only, as in `complete`.
+        """
+        if isinstance(file, bytes):
+            if not filename:
+                raise LLMError(self.provider, "filename is required with raw bytes")
+            content = file
+        else:
+            path = Path(file)
+            filename = filename or path.name
+            content = path.read_bytes()
+        mime = (
+            content_type
+            or mimetypes.guess_type(filename)[0]
+            or "application/octet-stream"
+        )
+        data: list[tuple[str, str]] = [("model", model)]
+        if language is not None:
+            data.append(("language", language))
+        if prompt is not None:
+            data.append(("prompt", prompt))
+        if temperature is not None:
+            data.append(("temperature", str(temperature)))
+        resp = await self.session.post(
+            "/audio/transcriptions",
+            files=[("file", (filename, content, mime))],
+            data=data,
+            headers=dict(headers) if headers else None,
+        )
+        return _check_resp(resp)
 
     async def upload_batch_file(
         self,

@@ -85,6 +85,25 @@ async with OpenAIClient(model="text-embedding-3-small") as client:
 
 `stream_raw(body, headers=...)` yields the provider's SSE bytes unparsed (`data:` lines and `[DONE]` included), for a backend that relays them to a client reading the OpenAI wire format, chunk by chunk as they arrive. A compressed response arrives decoded, so a relay must not copy the upstream `Content-Encoding`. The status is checked before the first byte, so an error raises the same exceptions as `stream`; OpenTelemetry instrumentation does not cover it.
 
+## Transcription
+
+`transcribe` posts an audio file to `/audio/transcriptions` and returns `{"text": ...}`.
+It takes a path or raw bytes; the provider reads the format from the file name, so raw
+bytes need `filename`.
+
+```python
+result = await client.transcribe(
+    audio_bytes,
+    filename="note.webm",
+    model="whisper-1",
+    language="fr",
+    prompt="Soren, Loxam",  # spelling hints
+)
+print(result["text"])
+```
+
+It also accepts `content_type`, `temperature` and `headers=` (sent with that request only).
+
 ## Batch Processing
 
 OpenAI supports batch processing via a file-based API. Requests are serialized to JSONL, uploaded, and results are retrieved as a file once the batch completes.

@@ -1,6 +1,8 @@
+from typing import Any, NotRequired, TypedDict
+
 from ..content import AudioFormat
 
-__all__ = ("AUDIO_FORMATS", "supports_audio")
+__all__ = ("AUDIO_FORMATS", "Transcription", "supports_audio")
 
 # The chat completions input_audio schema only admits wav and mp3.
 AUDIO_FORMATS: frozenset[AudioFormat] = frozenset({"wav", "mp3"})
@@ -12,3 +14,10 @@ def supports_audio(model: str, fmt: AudioFormat | None = None) -> bool:
     if "audio" not in model:
         return False
     return fmt is None or fmt in AUDIO_FORMATS
+
+
+class Transcription(TypedDict):
+    """The JSON body of ``POST /audio/transcriptions`` (``response_format="json"``)."""
+
+    text: str
+    usage: NotRequired[dict[str, Any]]
