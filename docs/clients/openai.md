@@ -83,6 +83,8 @@ async with OpenAIClient(model="text-embedding-3-small") as client:
 
 `complete_chat`/`stream_chat` also accept `extra_params` for provider-only body fields. For raw request bodies, `complete`/`stream` bypass the `ChatMessage` shaping. All four take `headers=` for headers sent with that request only (e.g. a gateway's per-user attribution on a client every user shares), on every OpenAI-compatible client; they are merged over the session's, so a same-named key, `Authorization` included, replaces it. `AgentSession` does not forward them.
 
+`stream_raw(body, headers=...)` yields the provider's SSE bytes unparsed (`data:` lines and `[DONE]` included), for a backend that relays them to a client reading the OpenAI wire format. The status is checked before the first byte, so an error raises the same exceptions as `stream`; OpenTelemetry instrumentation does not cover it.
+
 ## Batch Processing
 
 OpenAI supports batch processing via a file-based API. Requests are serialized to JSONL, uploaded, and results are retrieved as a file once the batch completes.

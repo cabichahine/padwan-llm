@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import typing
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import field
 from functools import partial
@@ -157,21 +157,41 @@ def _check_resp_status(resp: niquests.Response) -> niquests.Response:
             data = resp.json()
         except Exception:
             raise e
-        if resp.status_code == HTTPStatus.TOO_MANY_REQUESTS:
-            retry_after = resp.headers.get("retry-after")
-            retry_delay = int(retry_after) if retry_after else 60
-            raise TooManyRequestsError(retry_delay=retry_delay, response=resp)
-        if resp.status_code == HTTPStatus.PAYMENT_REQUIRED:
-            raise QuotaExceededError(body=data)
-        error = data.get("error", "") if isinstance(data, dict) else data
-        if isinstance(error, dict):
-            msg = error.get("message", "")
-        elif isinstance(data, dict) and data.get("message"):
-            # some OpenAI-compatible backends use {"error": "...", "message": "..."}
-            msg = f"{error} — {data['message']}" if error else str(data["message"])
-        else:
-            msg = str(error)
-        raise LLMError("openai", f"{resp.status_code} {msg}", body=data) from e
+        _raise_http_error(resp, data, e)
+
+
+async def _check_stream_status(resp: niquests.AsyncResponse) -> None:
+    """`_check_resp_status` for a response opened with ``stream=True``: its body is read
+    (awaited) only on a failure, to name the error."""
+    try:
+        resp.raise_for_status()
+    except niquests.exceptions.HTTPError as e:
+        try:
+            data = await resp.json()
+        except Exception:
+            raise e
+        _raise_http_error(resp, data, e)
+
+
+def _raise_http_error(
+    resp: niquests.Response, data: typing.Any, cause: niquests.exceptions.HTTPError
+) -> typing.NoReturn:
+    """Raise the padwan error for a failed response whose JSON body is `data`."""
+    if resp.status_code == HTTPStatus.TOO_MANY_REQUESTS:
+        retry_after = resp.headers.get("retry-after")
+        retry_delay = int(retry_after) if retry_after else 60
+        raise TooManyRequestsError(retry_delay=retry_delay, response=resp)
+    if resp.status_code == HTTPStatus.PAYMENT_REQUIRED:
+        raise QuotaExceededError(body=data)
+    error = data.get("error", "") if isinstance(data, dict) else data
+    if isinstance(error, dict):
+        msg = error.get("message", "")
+    elif isinstance(data, dict) and data.get("message"):
+        # some OpenAI-compatible backends use {"error": "...", "message": "..."}
+        msg = f"{error} — {data['message']}" if error else str(data["message"])
+    else:
+        msg = str(error)
+    raise LLMError("openai", f"{resp.status_code} {msg}", body=data) from cause
 
 
 def _check_resp[T](
@@ -327,6 +347,34 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
         async with aclosing(self._iter_sse(resp, done_sentinel="[DONE]")) as events:
             async for payload in events:
                 yield cast("CreateChatCompletionStreamResponse", payload)
+
+    async def stream_raw(
+        self,
+        body: CreateChatCompletionRequest,
+        *,
+        headers: Mapping[str, str] | None = None,
+        chunk_size: int = 8192,
+    ) -> AsyncGenerator[bytes]:
+        """Stream a chat completion as the provider's SSE bytes, unparsed: ``data:``
+        lines and the ``[DONE]`` terminator included, for a caller that relays them as
+        they are (a backend in front of a browser that reads the OpenAI wire format).
+
+        The status is checked before the first byte, and a failure raises as in
+        `stream`. The connection is closed when the stream ends or the caller stops
+        reading. ``headers`` are sent with this request only, as in `complete`.
+        """
+        resp = await self.session.post(
+            "/chat/completions",
+            json={**body, "stream": True},
+            headers=dict(headers) if headers else None,
+            stream=True,
+        )
+        try:
+            await _check_stream_status(resp)
+            async for chunk in await resp.iter_content(chunk_size):
+                yield chunk
+        finally:
+            await resp.close()
 
     def _prepare_messages(
         self, messages: Sequence[ChatMessage]

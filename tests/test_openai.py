@@ -1,9 +1,10 @@
 import json
-from contextlib import nullcontext
+from contextlib import aclosing, nullcontext
 from types import MappingProxyType
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from niquests.exceptions import HTTPError
 
 from padwan_ai.errors import LLMError, QuotaExceededError, TooManyRequestsError
 from padwan_ai.openai.batch import BatchJob, BatchResult
@@ -518,6 +519,93 @@ class TestOpenAIStream:
                     client, {"model": "gpt-4o", "messages": []}
                 )
             ]
+
+
+class TestOpenAIStreamRaw:
+    """Tests for _OpenAIBase.stream_raw(): the provider's SSE bytes, relayed unparsed."""
+
+    SSE = (
+        b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    )
+
+    @pytest.fixture
+    def client(self):
+        c = MagicMock(spec=OpenAIClient)
+        c.provider = "openai"
+        c.session = AsyncMock()
+        return c
+
+    @staticmethod
+    def _resp(status: int = 200, chunks: tuple[bytes, ...] = (), body=None):
+        resp = AsyncMock()
+        resp.status_code = status
+        resp.headers = {}
+        if status >= 400:
+            resp.raise_for_status = MagicMock(side_effect=HTTPError(response=resp))
+        else:
+            resp.raise_for_status = MagicMock(return_value=resp)
+
+        async def _chunks():
+            for chunk in chunks:
+                yield chunk
+
+        resp.iter_content = AsyncMock(return_value=_chunks())
+        resp.json = AsyncMock(return_value=body)
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_relays_bytes_unchanged_then_closes(self, client):
+        resp = self._resp(chunks=self.SSE)
+        client.session.post.return_value = resp
+        headers = {"x-litellm-end-user-id": "42"}
+        relayed = [
+            c
+            async for c in OpenAIClient.stream_raw(
+                client, {"model": "gpt-4o", "messages": []}, headers=headers
+            )
+        ]
+        assert relayed == list(self.SSE)
+        kwargs = client.session.post.call_args.kwargs
+        assert kwargs["json"] == {"model": "gpt-4o", "messages": [], "stream": True}
+        assert kwargs["headers"] == headers
+        assert kwargs["stream"] is True
+        resp.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_closes_when_the_caller_stops_reading(self, client):
+        resp = self._resp(chunks=self.SSE)
+        client.session.post.return_value = resp
+        async with aclosing(
+            OpenAIClient.stream_raw(client, {"model": "gpt-4o", "messages": []})
+        ) as stream:
+            async for _ in stream:
+                break
+        resp.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status, body, error",
+        [
+            pytest.param(429, {"error": "slow down"}, TooManyRequestsError, id="429"),
+            pytest.param(402, {"error": "no credit"}, QuotaExceededError, id="402"),
+            pytest.param(500, {"error": {"message": "boom"}}, LLMError, id="500"),
+        ],
+    )
+    async def test_failure_raises_before_the_first_byte(
+        self, client, status, body, error
+    ):
+        resp = self._resp(status=status, chunks=self.SSE, body=body)
+        client.session.post.return_value = resp
+        relayed: list[bytes] = []
+        with pytest.raises(error):
+            async for chunk in OpenAIClient.stream_raw(
+                client, {"model": "gpt-4o", "messages": []}
+            ):
+                relayed.append(chunk)
+        assert relayed == []
+        resp.iter_content.assert_not_called()
+        resp.close.assert_awaited_once()
 
 
 _COMPLETION = {
