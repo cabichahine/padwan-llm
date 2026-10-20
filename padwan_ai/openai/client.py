@@ -361,15 +361,9 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
         headers: RequestHeaders | None = None,
         chunk_size: int = -1,
     ) -> AsyncGenerator[bytes]:
-        """Stream a chat completion as the provider's SSE bytes, unparsed: ``data:``
-        lines and the ``[DONE]`` terminator included, for a caller that relays them as
-        they are (a backend in front of a browser that reads the OpenAI wire format).
+        """Stream a chat completion as the provider's raw SSE bytes, for relaying unchanged.
 
-        The status is checked before the first byte, and a failure raises as in
-        `stream`. The connection is closed when the stream ends or the generator is
-        closed (wrap it in `aclosing` to close it on an early ``break``). ``headers`` are
-        sent with this request only, as in `complete`; the default ``chunk_size=-1``
-        yields bytes as they arrive (a positive size buffers up to it).
+        Errors raise before the first byte; ``chunk_size=-1`` yields bytes as they arrive.
         """
         resp = await self.session.post(
             "/chat/completions",
