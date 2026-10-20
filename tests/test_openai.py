@@ -570,11 +570,20 @@ class TestOpenAIStreamRaw:
         assert kwargs["json"] == {"model": "gpt-4o", "messages": [], "stream": True}
         assert kwargs["headers"] == headers
         assert kwargs["stream"] is True
+        # A positive chunk size buffers the whole reply before the first yield.
+        resp.iter_content.assert_awaited_once_with(-1)
         resp.close.assert_awaited_once()
 
-    @pytest.mark.asyncio
-    async def test_closes_when_the_caller_stops_reading(self, client):
+    @pytest.mark.parametrize(
+        "close_error",
+        [
+            pytest.param(None, id="clean-close"),
+            pytest.param(KeyError(1), id="http2-abort-raises"),
+        ],
+    )
+    async def test_closes_when_the_caller_stops_reading(self, client, close_error):
         resp = self._resp(chunks=self.SSE)
+        resp.close.side_effect = close_error
         client.session.post.return_value = resp
         async with aclosing(
             OpenAIClient.stream_raw(client, {"model": "gpt-4o", "messages": []})

@@ -24,6 +24,7 @@ from .._base import (
 from .._json import dumps as _json_dumps, loads as _json_loads
 from ..conversation import ChatMessage
 from ..errors import LLMError, QuotaExceededError, TooManyRequestsError
+from ..logs import log
 from ..models import (
     ChatResponse,
     FinishReason,
@@ -353,15 +354,17 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
         body: CreateChatCompletionRequest,
         *,
         headers: Mapping[str, str] | None = None,
-        chunk_size: int = 8192,
+        chunk_size: int = -1,
     ) -> AsyncGenerator[bytes]:
         """Stream a chat completion as the provider's SSE bytes, unparsed: ``data:``
         lines and the ``[DONE]`` terminator included, for a caller that relays them as
         they are (a backend in front of a browser that reads the OpenAI wire format).
 
         The status is checked before the first byte, and a failure raises as in
-        `stream`. The connection is closed when the stream ends or the caller stops
-        reading. ``headers`` are sent with this request only, as in `complete`.
+        `stream`. The connection is closed when the stream ends or the generator is
+        closed (wrap it in `aclosing` to close it on an early ``break``). ``headers`` are
+        sent with this request only, as in `complete`; the default ``chunk_size=-1``
+        yields bytes as they arrive (a positive size buffers up to it).
         """
         resp = await self.session.post(
             "/chat/completions",
@@ -374,7 +377,11 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
             async for chunk in await resp.iter_content(chunk_size):
                 yield chunk
         finally:
-            await resp.close()
+            # Aborting an HTTP/2 stream can raise in urllib3-future, as in `_iter_sse`.
+            try:
+                await resp.close()
+            except Exception as e:
+                log.debug("stream_raw close failed: %s", e)
 
     def _prepare_messages(
         self, messages: Sequence[ChatMessage]
