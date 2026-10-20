@@ -161,7 +161,7 @@ def _check_resp_status(resp: niquests.Response) -> niquests.Response:
     except niquests.exceptions.HTTPError as e:
         try:
             data = resp.json()
-        except Exception:
+        except ValueError:  # not JSON; a read error propagates
             data = None
         _raise_http_error(resp, data, e)
 
@@ -174,7 +174,7 @@ async def _check_stream_status(resp: niquests.AsyncResponse) -> None:
     except niquests.exceptions.HTTPError as e:
         try:
             data = await resp.json()
-        except Exception:
+        except ValueError:  # not JSON; a read error propagates
             data = None
         _raise_http_error(resp, data, e)
 

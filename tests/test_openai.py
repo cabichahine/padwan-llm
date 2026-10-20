@@ -531,6 +531,13 @@ class TestOpenAIStream:
                 pytest.raises(TooManyRequestsError),
                 id="stream_raw-429-non-json",
             ),
+            pytest.param(
+                OpenAIClient.stream_raw,
+                500,
+                ConnectionError("reset"),
+                pytest.raises(ConnectionError),
+                id="stream_raw-body-read-fails",
+            ),
         ],
     )
     async def test_raises_before_first_chunk(
