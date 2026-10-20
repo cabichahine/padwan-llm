@@ -24,20 +24,26 @@ def test_openai_model_literal_includes_stable_drift_addition() -> None:
     assert "gpt-6.1-sol" in OPENAI_MODELS
 
 
+def _delay(seconds: int):
+    return pytest.raises(TooManyRequestsError, check=lambda e: e.retry_delay == seconds)
+
+
+_NOT_JSON = ValueError("not json")
+_PAST = "Wed, 21 Oct 2015 07:28:00 GMT"
+
+
 @pytest.mark.parametrize(
     "status, json_data, headers, ctx",
     [
         pytest.param(200, {"ok": True}, None, nullcontext(), id="success"),
+        pytest.param(429, {}, {"retry-after": "30"}, _delay(30), id="429-seconds"),
+        pytest.param(429, {}, None, _delay(60), id="429-default-60"),
+        pytest.param(429, {}, {"retry-after": _PAST}, _delay(1), id="429-past-date"),
+        pytest.param(429, {}, {"retry-after": "soon"}, _delay(60), id="429-unreadable"),
         pytest.param(
-            429,
-            {},
-            {"retry-after": "30"},
-            pytest.raises(TooManyRequestsError),
-            id="429-retry",
+            429, _NOT_JSON, {"retry-after": "30"}, _delay(30), id="429-non-json"
         ),
-        pytest.param(
-            429, {}, None, pytest.raises(TooManyRequestsError), id="429-default-60"
-        ),
+        pytest.param(502, _NOT_JSON, None, pytest.raises(HTTPError), id="502-non-json"),
         pytest.param(
             402,
             {"error": "quota"},
@@ -53,33 +59,6 @@ def test_check_resp(status, json_data, headers, ctx, make_resp):
     with ctx:
         result = _check_resp(resp)
         assert result == json_data
-
-
-@pytest.mark.parametrize(
-    "headers, json_body, expected_delay",
-    [
-        pytest.param({"retry-after": "30"}, True, 30, id="seconds"),
-        pytest.param(
-            {"retry-after": "Wed, 21 Oct 2015 07:28:00 GMT"}, True, 0, id="past-date"
-        ),
-        pytest.param({"retry-after": "soon"}, True, 60, id="unreadable"),
-        pytest.param(None, False, 60, id="non-json-body"),
-    ],
-)
-def test_check_resp_429_retry_delay(headers, json_body, expected_delay, make_resp):
-    resp = make_resp(429, {}, headers)
-    if not json_body:
-        resp.json.side_effect = ValueError("not json")
-    with pytest.raises(TooManyRequestsError) as exc:
-        _check_resp(resp)
-    assert exc.value.retry_delay == expected_delay
-
-
-def test_check_resp_non_json_error_keeps_the_http_error(make_resp):
-    resp = make_resp(502, {})
-    resp.json.side_effect = ValueError("not json")
-    with pytest.raises(HTTPError):
-        _check_resp(resp)
 
 
 class TestOpenAIChatStreamExtraction:
@@ -529,21 +508,40 @@ class TestOpenAIStream:
         assert chunks == [chunk]
 
     @pytest.mark.parametrize(
-        "method, status, match",
+        "method, status, body, ctx",
         [
-            pytest.param(OpenAIClient.stream, 200, "SSE extension", id="stream"),
-            pytest.param(OpenAIClient.stream_raw, 500, "boom", id="stream_raw"),
+            pytest.param(
+                OpenAIClient.stream,
+                200,
+                {},
+                pytest.raises(LLMError, match="SSE extension"),
+                id="stream",
+            ),
+            pytest.param(
+                OpenAIClient.stream_raw,
+                500,
+                {"error": {"message": "boom"}},
+                pytest.raises(LLMError, match="boom"),
+                id="stream_raw",
+            ),
+            pytest.param(
+                OpenAIClient.stream_raw,
+                429,
+                ValueError("not json"),
+                pytest.raises(TooManyRequestsError),
+                id="stream_raw-429-non-json",
+            ),
         ],
     )
     async def test_raises_before_first_chunk(
-        self, client, make_sse_event, make_sse_resp, method, status, match
+        self, client, make_sse_event, make_sse_resp, method, status, body, ctx
     ):
         resp = make_sse_resp([make_sse_event(json.dumps({"choices": []}))], status)
         resp.extension = None
-        resp.json.return_value = {"error": {"message": "boom"}}
+        resp.json.side_effect = [body]
         client.session.post.return_value = resp
         chunks = []
-        with pytest.raises(LLMError, match=match):
+        with ctx:
             async for c in method(client, {"model": "gpt-4o", "messages": []}):
                 chunks.append(c)
         assert chunks == []

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import math
 import os
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self
 import niquests
 from niquests.typing import JSONEncoderType
 from urllib3.contrib.webextensions._async import AsyncServerSideEventExtensionFromHTTP
+from urllib3.exceptions import InvalidHeader
 from urllib3.util.retry import Retry
 
 from ._deprecation import warn_if_deprecated
@@ -51,6 +53,16 @@ class ChatStream(abc.ABC):
 
 
 PADWAN_API_KEY_ENV = "PADWAN_API_KEY"
+
+
+def retry_after_delay(retry_after: str | None) -> int:
+    """Seconds to wait from a ``Retry-After`` header (seconds or HTTP date), at least 1; 60 if absent or unreadable."""
+    if retry_after is None:
+        return 60
+    try:
+        return max(1, math.ceil(Retry().parse_retry_after(retry_after)))
+    except (InvalidHeader, OverflowError, ValueError):
+        return 60
 
 
 def env_api_key(provider: Provider, var: str) -> str:

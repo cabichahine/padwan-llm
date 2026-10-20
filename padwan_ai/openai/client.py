@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import dataclasses
-import math
 import os
 import typing
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
@@ -14,7 +13,6 @@ from typing import TYPE_CHECKING, ClassVar, Literal, cast, get_args
 from urllib.parse import urlparse
 
 import niquests
-from urllib3.exceptions import InvalidHeader
 from urllib3.util.retry import Retry
 
 from .._base import (
@@ -23,6 +21,7 @@ from .._base import (
     LLMClientBase,
     Provider,
     env_api_key,
+    retry_after_delay,
 )
 from .._json import dumps as _json_dumps, loads as _json_loads
 from ..content import _read_audio
@@ -187,7 +186,8 @@ def _raise_http_error(
     when the body is not JSON: a 429 still maps, any other status re-raises `cause`)."""
     if resp.status_code == HTTPStatus.TOO_MANY_REQUESTS:
         raise TooManyRequestsError(
-            retry_delay=_retry_delay(resp.headers.get("retry-after")), response=resp
+            retry_delay=retry_after_delay(resp.headers.get("retry-after")),
+            response=resp,
         ) from cause
     if data is None:
         raise cause
@@ -202,17 +202,6 @@ def _raise_http_error(
     else:
         msg = str(error)
     raise LLMError("openai", f"{resp.status_code} {msg}", body=data) from cause
-
-
-def _retry_delay(retry_after: str | None) -> int:
-    """Seconds to wait from a ``Retry-After`` header (seconds or an HTTP date); 60
-    when it is absent or unreadable."""
-    if retry_after is None:
-        return 60
-    try:
-        return math.ceil(Retry().parse_retry_after(retry_after))
-    except (InvalidHeader, OverflowError, ValueError):
-        return 60
 
 
 def _check_resp[T](

@@ -1,5 +1,4 @@
 import dataclasses
-import math
 from collections.abc import Mapping
 from dataclasses import field
 from functools import partial
@@ -7,10 +6,9 @@ from types import TracebackType
 from typing import Any, ClassVar, Literal, Self, cast, get_args
 
 import niquests
-from urllib3.exceptions import InvalidHeader
 from urllib3.util.retry import Retry
 
-from .._base import env_api_key
+from .._base import env_api_key, retry_after_delay
 from ..errors import LLMError, Provider, TooManyRequestsError
 from .models import JSONContent, Question, SystemOneResponse
 
@@ -63,17 +61,8 @@ def _check_resp(resp: niquests.Response) -> SystemOneResponse:
         body = data if isinstance(data, dict) else None
         message = _error_message(data)
         if resp.status_code == 429:
-            raw_retry_after = resp.headers.get("retry-after")
-            try:
-                retry_delay = (
-                    60
-                    if raw_retry_after is None
-                    else math.ceil(Retry().parse_retry_after(raw_retry_after))
-                )
-            except (InvalidHeader, OverflowError, ValueError):
-                retry_delay = 60
             raise TooManyRequestsError(
-                retry_delay=retry_delay,
+                retry_delay=retry_after_delay(resp.headers.get("retry-after")),
                 message=message or None,
                 response=resp,
             ) from error

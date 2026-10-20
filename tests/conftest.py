@@ -54,10 +54,15 @@ def _clear_gateway_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def make_resp():
-    def _make(status_code: int, json_data: dict, headers: dict | None = None):
+    def _make(
+        status_code: int, json_data: dict | Exception, headers: dict | None = None
+    ):
         resp = MagicMock()
         resp.status_code = status_code
-        resp.json.return_value = json_data
+        if isinstance(json_data, Exception):
+            resp.json.side_effect = json_data
+        else:
+            resp.json.return_value = json_data
         resp.headers = headers or {}
         if status_code >= 400:
             resp.raise_for_status.side_effect = HTTPError(response=resp)
