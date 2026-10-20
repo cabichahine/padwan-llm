@@ -28,7 +28,7 @@ Most LLM client libraries pull in heavy dependencies (pydantic, httpx) and lock 
 
 | Provider | Chat | Streaming | Batch | Realtime | Transcription | TTS | Embeddings |
 |----------|------|-----------|-------|----------|---------------|-----|------------|
-| OpenAI   | ✅   | ✅        | ✅    | ✅       | ❌            | ❌  | ✅         |
+| OpenAI   | ✅   | ✅        | ✅    | ✅       | ✅            | ❌  | ✅         |
 | Gemini   | ✅   | ✅        | ✅    | ✅       | ➖            | ✅  | ✅         |
 | Mistral  | ✅   | ✅        | ❌    | ❌       | ✅            | ❌  | ✅         |
 | Grok     | ✅   | ✅        | ✅    | ✅       | ➖            | ❌  | ➖         |

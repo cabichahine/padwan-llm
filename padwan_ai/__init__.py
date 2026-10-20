@@ -80,6 +80,7 @@ from .mistral import MISTRAL_MODELS, MistralClient, MistralModel, is_mistral_mod
 from .models import (
     ChatResponse,
     FinishReason,
+    RequestHeaders,
     ToolCall,
     ToolCallFunction,
     ToolDefinition,
@@ -178,6 +179,7 @@ __all__ = (
     "RealtimeClientBase",
     "RealtimeConnection",
     "RealtimeServerEvent",
+    "RequestHeaders",
     "ScoreAnswer",
     "ScoreQuestion",
     "StopReason",

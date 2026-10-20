@@ -87,13 +87,14 @@ async with OpenAIClient(model="text-embedding-3-small") as client:
 
 ## Transcription
 
-`transcribe` posts an audio file to `/audio/transcriptions` and returns `{"text": ...}`.
-It takes a path or raw bytes; the provider reads the format from the file name, so raw
-bytes need `filename`.
+`transcribe` posts an audio file to `/audio/transcriptions` and returns `{"text": ...}`
+(the default `json` response format; `verbose_json` timestamps are not exposed). `file=`
+takes a path or raw bytes; the provider reads the format from the file name, so raw bytes
+need `filename`.
 
 ```python
 result = await client.transcribe(
-    audio_bytes,
+    file=audio_bytes,
     filename="note.webm",
     model="whisper-1",
     language="fr",

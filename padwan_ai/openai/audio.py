@@ -1,4 +1,4 @@
-from typing import Any, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 from ..content import AudioFormat
 
@@ -16,8 +16,22 @@ def supports_audio(model: str, fmt: AudioFormat | None = None) -> bool:
     return fmt is None or fmt in AUDIO_FORMATS
 
 
+class TranscriptionTokenUsage(TypedDict):
+    type: Literal["tokens"]
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    input_token_details: NotRequired[dict[str, int]]
+
+
+class TranscriptionDurationUsage(TypedDict):
+    type: Literal["duration"]
+    seconds: float
+
+
 class Transcription(TypedDict):
     """The JSON body of ``POST /audio/transcriptions`` (``response_format="json"``)."""
 
     text: str
-    usage: NotRequired[dict[str, Any]]
+    usage: NotRequired[TranscriptionTokenUsage | TranscriptionDurationUsage]
+    logprobs: NotRequired[list[dict[str, Any]]]
