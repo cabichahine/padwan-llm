@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import typing
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import field
 from functools import partial
@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, ClassVar, Literal, cast, get_args
 from urllib.parse import urlparse
 
 import niquests
-from niquests.typing import HeadersType
 from urllib3.util.retry import Retry
 
 from .._base import (
@@ -278,17 +277,17 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
         self,
         body: CreateChatCompletionRequest,
         *,
-        headers: HeadersType | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> tuple[CreateChatCompletionResponse, UsageToken]:
         """Fetch structured completion from an OpenAI-compatible endpoint.
 
-        ``headers`` are sent with this request only, on top of the session's (e.g. a
-        gateway's per-user attribution headers on a client shared by every user).
+        ``headers`` are sent with this request only, merged over the session's (a
+        same-named key, ``Authorization`` included, wins).
         """
         resp = await self.session.post(
             "/chat/completions",
             json=body,
-            headers=headers,
+            headers=dict(headers) if headers else None,
         )
         data: CreateChatCompletionResponse = _check_resp(resp)
 
@@ -313,7 +312,7 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
         self,
         body: CreateChatCompletionRequest,
         *,
-        headers: HeadersType | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> AsyncIterator[CreateChatCompletionStreamResponse]:
         """Stream chat completions, yielding response chunks as they arrive via SSE.
 
@@ -322,7 +321,7 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
         resp = await self.session.post(
             self._sse_url("/chat/completions"),
             json={**body, "stream": True},
-            headers=headers,
+            headers=dict(headers) if headers else None,
         )
         _check_resp_status(resp)
         async with aclosing(self._iter_sse(resp, done_sentinel="[DONE]")) as events:
@@ -367,8 +366,10 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
         messages: Sequence[ChatMessage],
         tools: Sequence[ToolDefinition] | None = None,
         extra_params: dict[str, typing.Any] | None = None,
+        *,
+        headers: Mapping[str, str] | None = None,
     ) -> tuple[ChatResponse, UsageToken]:
-        """Send a chat conversation and return the structured response."""
+        """Send a chat conversation and return the structured response; ``headers`` as in `complete`."""
         if not self.model:
             raise LLMError(self.provider, "No model specified")
         body: CreateChatCompletionRequest = {
@@ -380,7 +381,10 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
             body["tools"] = cast(list, self._tools_to_openai(tools))
         if extra_params:
             body.update(cast(typing.Any, extra_params))
-        data, token = await self.complete(body)
+        # Keep the one-arg call so `complete(body)` overrides keep working.
+        data, token = await (
+            self.complete(body, headers=headers) if headers else self.complete(body)
+        )
         choice = data["choices"][0]
         message_dict = cast(dict[str, typing.Any], choice["message"])
         raw_reason = choice.get("finish_reason", "stop")
@@ -406,15 +410,19 @@ class _OpenAIBase(_OpenAIAuth, LLMClientBase[Retry], OpenAIToolMixin):
         messages: Sequence[ChatMessage],
         tools: Sequence[ToolDefinition] | None = None,
         extra_params: dict[str, typing.Any] | None = None,
+        *,
+        headers: Mapping[str, str] | None = None,
     ) -> OpenAIChatStream:
         """Stream a chat conversation, yielding text chunks.
 
         Usage and tool_calls are available on the returned stream object after iteration.
         The optional ``extra_params`` dict is merged into the request body verbatim,
         so provider-specific fields (e.g. NVIDIA's ``chat_template_kwargs``) can be
-        passed without modifying the client.
+        passed without modifying the client. ``headers`` are as in `complete`.
         """
-        return OpenAIChatStream(self, messages, tools, extra_params=extra_params)
+        return OpenAIChatStream(
+            self, messages, tools, extra_params=extra_params, headers=headers
+        )
 
 
 @dataclasses.dataclass
@@ -425,6 +433,7 @@ class OpenAIChatStream(ChatStream, OpenAIToolMixin):
     messages: Sequence[ChatMessage]
     tools: Sequence[ToolDefinition] | None = None
     extra_params: dict[str, typing.Any] | None = None
+    headers: Mapping[str, str] | None = None
     usage: UsageToken | None = None
     tool_calls: list[ToolCall] | None = None
     finish_reason: str | None = None
@@ -446,7 +455,12 @@ class OpenAIChatStream(ChatStream, OpenAIToolMixin):
         # Accumulate tool call deltas keyed by index
         pending: dict[int, dict[str, str]] = {}
 
-        async for chunk in self.client.stream(body):
+        chunks = (
+            self.client.stream(body, headers=self.headers)
+            if self.headers
+            else self.client.stream(body)
+        )
+        async for chunk in chunks:
             delta = self._delta(chunk)
             if delta is not None:
                 if self.client.on_thought and (
