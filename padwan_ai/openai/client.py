@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import typing
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import field
 from functools import partial
@@ -599,13 +599,15 @@ class OpenAIClient(_OpenAIBase):
         prompt: str | None = None,
         temperature: float | None = None,
         headers: RequestHeaders | None = None,
+        extra_params: Mapping[str, str] | None = None,
     ) -> Transcription:
         """Transcribe audio with ``POST /audio/transcriptions`` (multipart).
 
         ``file`` is a path or raw bytes. The provider reads the audio format from the
         file name's extension, so raw bytes need ``filename`` (e.g. ``"note.webm"``).
         ``prompt`` steers spelling and vocabulary; ``headers`` are sent with this
-        request only, as in `complete`.
+        request only, as in `complete`. ``extra_params`` adds form fields for
+        provider-only parameters (e.g. a gateway's ``metadata``, as a JSON string).
         """
         if isinstance(file, bytes) and not filename:
             raise ValueError("filename is required with raw bytes")
@@ -617,6 +619,8 @@ class OpenAIClient(_OpenAIBase):
             data.append(("prompt", prompt))
         if temperature is not None:
             data.append(("temperature", str(temperature)))
+        if extra_params:
+            data.extend(extra_params.items())
         resp = await self.session.post(
             "/audio/transcriptions",
             files=[("file", audio)],

@@ -714,3 +714,32 @@ class TestBatchJobProperties:
             input_file_id="file-abc",
         )
         assert job.succeeded is expected
+
+
+@pytest.mark.parametrize(
+    "extra_params, expected_extra",
+    [
+        pytest.param(None, [], id="none"),
+        pytest.param(
+            {"metadata": '{"trace_user_id": "42"}'},
+            [("metadata", '{"trace_user_id": "42"}')],
+            id="gateway-metadata",
+        ),
+    ],
+)
+async def test_transcribe_adds_extra_form_fields(
+    make_resp, extra_params, expected_extra
+):
+    client = MagicMock(spec=OpenAIClient)
+    client.provider = "openai"
+    client.session = AsyncMock()
+    client.session.post.return_value = make_resp(200, {"text": "ok"})
+
+    await OpenAIClient.transcribe(
+        client, file=b"RIFF", filename="clip.wav", extra_params=extra_params
+    )
+
+    assert client.session.post.call_args.kwargs["data"] == [
+        ("model", "whisper-1"),
+        *expected_extra,
+    ]
