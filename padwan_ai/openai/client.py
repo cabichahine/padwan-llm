@@ -599,7 +599,7 @@ class OpenAIClient(_OpenAIBase):
         prompt: str | None = None,
         temperature: float | None = None,
         headers: RequestHeaders | None = None,
-        extra_params: Mapping[str, str] | None = None,
+        extra_params: Mapping[str, str] | Sequence[tuple[str, str]] | None = None,
     ) -> Transcription:
         """Transcribe audio with ``POST /audio/transcriptions`` (multipart).
 
@@ -607,7 +607,8 @@ class OpenAIClient(_OpenAIBase):
         file name's extension, so raw bytes need ``filename`` (e.g. ``"note.webm"``).
         ``prompt`` steers spelling and vocabulary; ``headers`` are sent with this
         request only, as in `complete`. ``extra_params`` adds form fields for
-        provider-only parameters (e.g. a gateway's ``metadata``, as a JSON string).
+        provider-only parameters (e.g. a gateway's ``metadata``, as a JSON string);
+        pass pairs to repeat a field (e.g. ``timestamp_granularities[]``).
         """
         if isinstance(file, bytes) and not filename:
             raise ValueError("filename is required with raw bytes")
@@ -620,7 +621,11 @@ class OpenAIClient(_OpenAIBase):
         if temperature is not None:
             data.append(("temperature", str(temperature)))
         if extra_params:
-            data.extend(extra_params.items())
+            data.extend(
+                extra_params.items()
+                if isinstance(extra_params, Mapping)
+                else extra_params
+            )
         resp = await self.session.post(
             "/audio/transcriptions",
             files=[("file", audio)],

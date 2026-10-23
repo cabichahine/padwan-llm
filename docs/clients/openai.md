@@ -103,7 +103,7 @@ result = await client.transcribe(
 print(result["text"])
 ```
 
-It also accepts `content_type`, `temperature`, `headers=` (sent with that request only) and `extra_params`, form fields for provider-only parameters (e.g. a gateway's `metadata`, as a JSON string).
+It also accepts `content_type`, `temperature`, `headers=` (sent with that request only) and `extra_params`, form fields for provider-only parameters (e.g. a gateway's `metadata`, as a JSON string); pass pairs to repeat a field (e.g. `timestamp_granularities[]`).
 
 ## Batch Processing
 

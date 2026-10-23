@@ -725,6 +725,17 @@ class TestBatchJobProperties:
             [("metadata", '{"trace_user_id": "42"}')],
             id="gateway-metadata",
         ),
+        pytest.param(
+            [
+                ("timestamp_granularities[]", "word"),
+                ("timestamp_granularities[]", "segment"),
+            ],
+            [
+                ("timestamp_granularities[]", "word"),
+                ("timestamp_granularities[]", "segment"),
+            ],
+            id="repeated-field-pairs",
+        ),
     ],
 )
 async def test_transcribe_adds_extra_form_fields(
